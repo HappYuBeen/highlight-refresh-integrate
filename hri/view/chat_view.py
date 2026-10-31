@@ -1,13 +1,12 @@
 """질의응답 탭 · build_chat_tab, respond_stream (장유빈) / on_suggest_click, on_term_click, on_feedback (류현수)"""
 import logging
-
 import gradio as gr
-
 from hri.dao.qa_log_dao import update_feedback
 from hri.domain.schemas import AnswerResult, TermCard
 from hri.exception.errors import ExternalApiError, InvalidInputError, OutputFormatError
 from hri.service.report_service import owner_filter, search_reports
 from hri.service.term_service import MAX_TERM_LENGTH, explain_term
+from hri.util.logger import safe_call
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +137,7 @@ def build_chat_tab():
 			with gr.Column(scale=3, variant="panel"):
 				gr.Markdown("#### 소스")
 				report_dropdown = gr.Dropdown(label="보고서 선택 (여러 개 가능)", choices=[], multiselect=True)
+				verify_btn = gr.Button("🔍 수치 검증 (ECOS)", size="sm")
 				persona = gr.Radio(PERSONA_CHOICES, value=DEFAULT_PERSONA, label="페르소나")
 				with gr.Accordion("검색 옵션", open=False):
 					k = gr.Slider(1, 10, value=DEFAULT_K, step=1, label="가져올 근거 수 (k)")
@@ -188,6 +188,7 @@ def build_chat_tab():
 		use_mmr=use_mmr,
 		term_menu=term_menu,
 		studio=studio,
+		verify_btn=verify_btn,
 	)
 	return tab
 
@@ -271,7 +272,108 @@ def connect_chat_events(state: gr.State) -> None:
 	# 질문 보내기: 👍/👎 숨기기 → respond_stream → 기록이 새로 생긴 답변이면 👍/👎 보이기 (류현수)
 	connect_feedback_events(state, [c["message"].submit, c["send_btn"].click], stream)
 	c["tab"].select(refresh_report_choices, inputs=[state, c["report_dropdown"]], outputs=c["report_dropdown"])
+	c["verify_btn"].click(
+		fn=on_verify,
+		inputs=[c["chatbot"], c["report_dropdown"], c["message"], state],
+		outputs=[c["chatbot"], c["message"]],
+	)
+# ---------------------------------------------------------------------
+# [김희진] 수치 검증 · on_verify (verify_and_expand를 질의응답 탭에 연결)
+# ---------------------------------------------------------------------
+VERIFY_MAX_REPORTS = 3 # 한 번에 검증하는 보고서 수 (보고서마다 ECOS 조회와 LLM 호출이 여러 번 나간다)
+VERIFY_DEFAULT_QUESTION = "선택한 보고서의 수치를 ECOS 통계로 검증해 줘"
+VERIFY_NEED_REPORT_MESSAGE = "검증할 보고서를 선택하세요."
+VERIFY_TOO_MANY_NOTE = "⚠️ 한 번에 {max}개까지 검증합니다. 앞의 {max}개만 검증했어요."
+VERIFY_FAIL_MESSAGE = "검증 결과를 만들지 못했습니다."
+VERIFY_API_ERROR_MESSAGE = "ECOS 통계를 불러오지 못해 검증하지 못했습니다. 잠시 후 다시 시도해 주세요."
+VERIFY_ERROR_MESSAGE = "검증 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."
 
+def _verify_and_expand(report_id: int, request: str):
+	"""verify_and_expand를 호출하는 시점에 불러와 실행한다 (이유는 _ask_stream과 같다)."""
+	from hri.prompt.summary_prompt import verify_and_expand
+
+	return verify_and_expand(report_id, request)
+
+def _escape_tilde(text: str) -> str:
+	"""Markdown에서 ~가 취소선으로 해석되지 않게 \\~로 바꾼다 (예: '2~3%')"""
+	return (text or "").replace("~", "\\~")
+
+def _verify_markdown(title: str, result) -> str:
+	"""보고서 1건의 검증 결과(VerifyResult)를 일치·차이·보완·검증하지 못한 항목 Markdown으로 바꾼다."""
+	lines = [f"### 🔍 {_escape_tilde(title)} · 수치 검증"]
+	sections = [
+		("✅ 일치·근사", result.matches),
+		("⚠️ 차이", result.differences),
+		("➕ ECOS로 보완", result.additions),
+		("❔ 검증하지 못한 항목", result.unchecked),
+	]
+	for label, items in sections:
+		if items:
+			lines += ["", f"**{label}**"]
+			lines += [f"- {_escape_tilde(item)}" for item in items]
+			lines += ["", f"*확인 시간: {result.checked_at:%Y-%m-%d %H:%M}*"]
+
+	return "\n".join(lines)
+
+@safe_call
+def on_verify(history: list, report_ids: list[int] | None, message: str, state: dict):
+	"""수치 검증 버튼: 선택한 보고서마다 verify_and_expand()를 실행해 결과를 대화창에 답변으로 보여 준다. (제너레이터)
+	
+	순서
+	1. 질문 입력칸의 글(없으면 기본 문구)을 사용자 말풍선으로 넣는다
+	2. 로그인 전이거나 보고서를 고르지 않았으면 안내만 보여 준다
+	3. 보고서를 VERIFY_MAX_REPORTS개까지 하나씩 검증하며 '(n/전체)' 진행 상황을 보여 준다
+		- 한 보고서가 실패해도(ECOS 오류·형식 오류 등) 그 보고서 자리에만 안내 문구를 넣고 나머지는 계속한다
+	4. 질문 입력칸은 비운다. qa_logs에는 기록하지 않는다 (route 종류가 정해져 있어서 👍/👎도 이전 답변 기준 그대로)
+
+	yield 값: (대화 기록, 질문 입력칸)
+	"""
+	history = list(history or [])
+	keep = gr.update()
+	request = (message or "").strip()
+	history.append({"role": "user", "content": request or VERIFY_DEFAULT_QUESTION})
+	user = (state or {}).get("user")
+	ids = list(dict.fromkeys(report_ids or []))
+
+	if user is None:
+		history.append({"role": "assistant", "content": NEED_LOGIN_MESSAGE})
+		yield history, keep
+		return
+	if not ids:
+		history.append({"role": "assistant", "content": VERIFY_NEED_REPORT_MESSAGE})
+		yield history, keep
+		return
+	notes = []
+
+	if len(ids) > VERIFY_MAX_REPORTS:
+		ids = ids[:VERIFY_MAX_REPORTS]
+		notes.append(VERIFY_TOO_MANY_NOTE.format(max=VERIFY_MAX_REPORTS))
+	try:
+		titles = {r.report_id: r.title for r in search_reports("", user_id=owner_filter(user))}
+	except Exception:
+		logger.exception("보고서 제목 조회 실패")
+		titles = {}
+	history.append({"role": "assistant", "content": ""})
+	parts = list(notes)
+
+	for no, report_id in enumerate(ids, 1):
+		name = titles.get(report_id, f"보고서 {report_id}")
+		history[-1]["content"] = "\n\n---\n\n".join([*parts, f"⏳ ECOS 통계로 검증 중({no}/{len(ids)}): {name}"])
+		yield history, ""
+		try:
+			result = _verify_and_expand(report_id, request)
+		except ExternalApiError:
+			logger.exception("ECOS 검증 실패: report_id=%s", report_id)
+			parts.append(f"### 🔍 {_escape_tilde(name)}\n{VERIFY_API_ERROR_MESSAGE}")
+		except OutputFormatError:
+			parts.append(f"### 🔍 {_escape_tilde(name)}\n{VERIFY_FAIL_MESSAGE}")
+		except Exception:
+			logger.exception("수치 검증 실패: report_id=%s", report_id)
+			parts.append(f"### 🔍 {_escape_tilde(name)}\n{VERIFY_ERROR_MESSAGE}")
+		else:
+			parts.append(_verify_markdown(name, result))
+	history[-1]["content"] = "\n\n---\n\n".join(parts)
+	yield history, ""
 
 # ---------------------------------------------------------------------
 # [류현수] 피드백 · connect_feedback_events, on_feedback

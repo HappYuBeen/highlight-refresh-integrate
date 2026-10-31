@@ -256,7 +256,7 @@ def run_agent_with_tools(request: str, report_ids: list[int]) -> tuple[str, list
 	3. recursion_limit을 넘으면(GraphRecursionError) 오류로 올리지 않고 '요청을 처리하지 못해했습니다.'를 돌려준다.
 	4. 끝나면(실패해도) 쓴 토큰을 insert_usage(flow='agent')로 모델별 기록한다.
 	
-	명세서의 반환(str)과 달리 도구 이름 목록도 함께 돌려준다: on_request()가 '실행한 도구'를 화면에 보여 주기 때문이다.
+	명세서의 반환(str)과 달리 도구 이름 목록도 함께 돌려준다: on_request()가 '실행한 도구'를 화면에 보여 주기 때문이다 (화면에서는 쓰지 않는다).
 
 	입력: request (자연어 요청), report_ids (선택한 보고서 번호 목록, 비어 있어도 됨)
 	출력: tuple (답변 str, 도구 이름 list[str])

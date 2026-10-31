@@ -12,7 +12,7 @@ from hri.config.settings import load_settings
 from hri.graph.registry import get_ingest_graph, get_qa_graph, get_summary_graph, get_agent_graph
 from hri.view.user_view import build_login_tab, on_login, on_logout, login_components
 from hri.view.report_view import build_upload_tab, build_report_list_panel, on_view_summary, on_go_chat, on_report_search, on_report_select, on_upload, report_list_components, upload_components
-from hri.view.summary_view import build_summary_tab, on_summarize, on_request, summary_components, on_merge
+from hri.view.summary_view import build_summary_tab, on_summarize, summary_components, on_merge
 from hri.view.chat_view import build_chat_tab, chat_components, connect_chat_events, refresh_report_choices
 from hri.view.indicator_view import on_compare
 from hri.view.history_view import build_history_tab, history_components, on_load_history, on_restore
@@ -63,25 +63,25 @@ def clear_other_user_screen(state, screen_owner):
 	3. 다른 사람이면 질의응답·요약·내 기록·업로드·지표 비교 화면 내용을 비운다
 
 	- 질문 기록 자체는 DB(qa_logs)에 남아 있어서, 다시 로그인하면 내 기록 탭에서 언제든 볼 수 있다
-	- 돌려주는 값 17개는 build_app()의 outputs 순서와 같아야 한다
+	- 돌려주는 값 15개는 build_app()의 outputs 순서와 같아야 한다
 	  [화면 주인, 대화창, 질문 입력칸, 출처, 👍, 👎, 질의응답 보고서 선택,
 	   요약 보고서 선택, 요약 결과, 요청, 요청 결과,
 	   기록 표, 대화 선택, 업로드 결과, 비교표, 비교 차트]
 
 	입력: state (gr.State), screen_owner (지금 화면 내용의 주인 user_id, 처음에는 None)
-	출력: list (값 17개)
+	출력: list (값 15개)
 	"""
 	keep = gr.update()
 
 	# 1) 로그인 실패면 그대로
 	if state["user"] == None:
-		return [screen_owner] + [keep] * 16
+		return [screen_owner] + [keep] * 14
 
 	user_id = state["user"]["user_id"]
 
 	# 2) 처음 로그인이거나 같은 사람이면 화면 그대로
 	if screen_owner == None or screen_owner == user_id:
-		return [user_id] + [keep] * 16
+		return [user_id] + [keep] * 14
 
 	# 3) 다른 사람이면 화면 내용 비우기
 	return [
@@ -95,8 +95,6 @@ def clear_other_user_screen(state, screen_owner):
 		gr.update(value=[]),  # 요약 보고서 선택
 		"",  # 요약 결과
 		"",  # 병합 결과
-		"",  # 요청
-		"",  # 요청 결과
 		"",  # 기록 표 (내 기록 탭을 열면 다시 채워짐)
 		gr.update(choices=[], value=None),  # 대화 선택
 		"",  # 업로드 결과
@@ -188,7 +186,7 @@ def build_app():
 				screen_owner,
 				chat_components["chatbot"], chat_components["message"], chat_components["sources"],
 				chat_components["like_btn"], chat_components["dislike_btn"], chat_components["report_dropdown"],
-				summary_components["report_dropdown"], summary_components["summary_result"], summary_components["merge_result"], summary_components["request"], summary_components["request_result"],
+				summary_components["report_dropdown"], summary_components["summary_result"], summary_components["merge_result"],
 				history_components["table"], history_components["session_dropdown"],
 				upload_components["result"],
 				compare_table, compare_chart
@@ -287,13 +285,6 @@ def build_app():
 			fn=on_merge,
 			inputs=summary_components["report_dropdown"],
 			outputs=summary_components["merge_result"]
-		)
-
-		# 요청 실행 버튼 누르면 자연어 요청을 에이전트로 처리해서 결과와 실행한 도구 보여주기
-		summary_components["request_btn"].click(
-			fn=on_request,
-			inputs=[summary_components["request"], summary_components["report_dropdown"]],
-			outputs=summary_components["request_result"]
 		)
 
 	return demo
