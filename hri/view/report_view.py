@@ -116,15 +116,20 @@ def on_report_select(evt: gr.SelectData, report_ids: list[int], state: dict):
 
 
 def _go_selected(state: dict, tab_id: str):
-	"""선택한 보고서가 있으면 tab_id 탭으로 옮기고 그 보고서를 드롭다운 값으로 돌려준다.
+	"""선택한 보고서가 있으면 tab_id 탭으로 옮기고 보고서 목록(CheckboxGroup)의 선택지와 값을 함께 채워 돌려준다.
 
+	버튼으로 탭을 옮기면 탭의 select 이벤트(refresh_report_choices)가 실행되지 않아서 선택지도 여기서 채운다.
+	(선택지에 없는 값을 넣으면 CheckboxGroup이 오류를 낸다)
 	선택한 보고서가 없으면 경고만 띄우고 화면은 그대로 둔다.
 	"""
 	report_ids = (state or {}).get("report_ids") or []
 	if not report_ids:
 		gr.Warning(NEED_SELECT_MESSAGE)
 		return gr.update(), gr.update()
-	return gr.update(selected=tab_id), gr.update(value=report_ids[0])
+	reports = search_reports("", user_id=owner_filter((state or {}).get("user")))
+	choices = [(r.title, r.report_id) for r in reports]
+	existing = {r.report_id for r in reports}
+	return gr.update(selected=tab_id), gr.update(choices=choices, value=[i for i in report_ids if i in existing])
 
 
 def on_view_summary(state: dict):

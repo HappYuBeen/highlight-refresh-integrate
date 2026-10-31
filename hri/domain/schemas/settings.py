@@ -45,9 +45,9 @@ class Settings(BaseModel):
 	chroma_password: Optional[SecretStr] = None
 
 	# 모델·단가
-	llm_model: str = "gpt-5-mini"
-	vision_model: str = "gpt-5.5"
-	model_prices: str = '{"gpt-5-mini": {"input": 0.25, "output": 2.00}, "gpt-5.5": {"input": 5.00, "output": 30.00}}'
+	llm_model: str = "gpt-6-luna"
+	vision_model: str = "gpt-6-luna"
+	model_prices: str = '{"gpt-6-luna": {"input": 0.1, "output": 0.5}}'
 
 	# OCR·차트
 	ocr_langs: str = "ko,en"

@@ -1,13 +1,14 @@
-"""대시보드 SQL · select_top_questions, select_source_ratio, select_perf_cost, select_recent_errors, select_daily_counts, select_persona_ratio, select_feedback_ratio, select_no_source_questions, select_route_ratio (임세준)
+"""대시보드 SQL · select_top_questions, select_source_ratio, select_perf_cost, select_avg_response_ms, select_recent_errors, select_daily_counts, select_persona_ratio, select_feedback_ratio, select_no_source_questions, select_route_ratio (임세준)
 
 관리자 대시보드 화면에 보여 줄 값을 qa_logs·llm_usage 테이블에서 집계하는 DAO.
 1차: get_dashboard_data()(3.7.8)가 이 함수들의 결과를 화면 형식으로 가공한다.
 - select_top_questions(): 많이 물어본 질문 TOP 10
 - select_source_ratio(): '자료에 없습니다'(no_answer) 응답 비율
 - select_perf_cost(): 일자별 평균 응답 시간 + flow·모델별 토큰 합계 (원화 비용은 DB에 저장하지 않고 get_dashboard_data()에서 계산)
+- select_avg_response_ms(): 전체 답변의 평균 응답 시간 (잡담·오류 제외)
 - select_recent_errors(): 최근 에러 기록 20건
 2차: get_dashboard_data_v2()(3.7.11)가 이 함수들의 결과를 화면 형식으로 가공한다.
-- select_daily_counts(): 날짜별 질문 수·평균 응답 시간 (VIEW v_daily_usage)
+- select_daily_counts(): 날짜별 질문 수·평균 응답 시간 (평균 응답 시간은 잡담·오류 제외)
 - select_persona_ratio(): 페르소나별 질문 수 + 합계 (WITH ROLLUP)
 - select_feedback_ratio(): 👍/👎 건수·합계·비율 (WITH ROLLUP)
 - select_no_source_questions(): '자료에 없습니다'가 2회 이상 나온 질문 (보고서 보강 후보)
@@ -22,6 +23,8 @@ def select_top_questions() -> list[dict]:
 
 	qa_logs를 question으로 GROUP BY 하여 COUNT 내림차순 상위 10건을 가져온다.
 	(같은 질문을 몇 번 했는지 세서 많이 나온 순서로 10개)
+	- 횟수가 같으면 가장 최근에 물어본 날짜(MAX(created_at))가 늦은 질문이 먼저 온다
+	  (10위 경계에서 같은 횟수인 질문이 여럿이어도 매번 같은 질문이 보이도록 순서를 고정)
 
 	입력: 없음
 	출력: list[dict] (예: [{'question': '기준금리 전망은?', 'count': 5}, ...], 기록이 없으면 [])
@@ -30,7 +33,7 @@ def select_top_questions() -> list[dict]:
 		SELECT question, COUNT(*) AS count
 		FROM qa_logs
 		GROUP BY question
-		ORDER BY count DESC
+		ORDER BY count DESC, MAX(created_at) DESC
 		LIMIT 10
 	"""
 
@@ -137,6 +140,35 @@ def select_perf_cost() -> list[dict]:
 	return results
 
 
+def select_avg_response_ms() -> float:
+	"""
+	평균 응답 시간 조회 (전체 답변 기준)
+
+	qa_logs에서 route IN ('rag', 'no_answer')인 답변의 응답 시간을 AVG 한다. (잡담(chat)·오류(error)는 제외)
+	- 일자별 평균을 다시 평균 내지 않고, 답변 하나하나를 똑같은 무게로 평균 낸다
+	- 응답 시간이 비어 있는(NULL) 기록은 AVG에서 빠진다
+
+	입력: 없음
+	출력: float (ms, 소수점 첫째 자리까지, 해당 답변이 하나도 없으면 0.0)
+	"""
+	sql = """
+		SELECT AVG(response_ms) AS avg_response_ms
+		FROM qa_logs
+		WHERE route IN ('rag', 'no_answer')
+	"""
+
+	with get_connection() as conn:
+		cursor = conn.cursor()
+		cursor.execute(sql)
+		row = cursor.fetchone()
+
+	# 해당 답변이 하나도 없으면 AVG 결과가 NULL(None)
+	if row["avg_response_ms"] == None:
+		return 0.0
+
+	return round(float(row["avg_response_ms"]), 1)
+
+
 def select_recent_errors() -> list[dict]:
 	"""
 	최근 에러 로그 조회
@@ -169,19 +201,23 @@ def select_daily_counts() -> list[dict]:
 	"""
 	사용 추이 조회 (날짜별 질문 수·평균 응답 시간)
 
-	VIEW v_daily_usage(DATE(created_at)별 질문 수·평균 응답 시간)를 조회한다.
-	- VIEW는 sql/schema.sql에 만들어 둔 '저장된 SELECT'라서 테이블처럼 조회하면 된다
+	qa_logs를 DATE(created_at)별로 묶어 질문 수와 평균 응답 시간을 집계한다.
+	- 질문 수는 모든 질문을 센다 (잡담(chat)·오류(error) 포함)
+	- 평균 응답 시간은 rag·no_answer 답변만 평균 낸다 (잡담(chat)·오류(error)는 제외)
 	- 차트를 그리기 좋게 오래된 날짜부터 정렬한다
 	- DB가 돌려준 Decimal(소수 타입) 평균 응답 시간을 float로 바꾼다 (소수 첫째 자리까지)
 
 	입력: 없음
 	출력: list[dict]
 	      예) [{'day': date(2026, 10, 27), 'question_count': 12, 'avg_response_ms': 1000.0}, ...]
-	      (기록이 없으면 [], 그날 응답 시간이 모두 비어 있으면 avg_response_ms는 None)
+	      (기록이 없으면 [], 그날 rag·no_answer 답변의 응답 시간이 하나도 없으면 avg_response_ms는 None)
 	"""
 	sql = """
-		SELECT day, question_count, avg_response_ms
-		FROM v_daily_usage
+		SELECT DATE(created_at) AS day,
+			COUNT(*) AS question_count,
+			AVG(CASE WHEN route IN ('rag', 'no_answer') THEN response_ms END) AS avg_response_ms
+		FROM qa_logs
+		GROUP BY DATE(created_at)
 		ORDER BY day
 	"""
 

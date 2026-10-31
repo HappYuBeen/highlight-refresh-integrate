@@ -132,7 +132,7 @@ check("3 관리자: 로그인 탭 숨김·로그아웃 버튼 보임", result[1]
 
 result = on_login("userA", "pw")
 check("4 일반 사용자: 보고서·요약·질의응답·내 기록 탭만 보임", shown_tabs(result) == ["보고서", "요약", "질의응답", "내 기록"], shown_tabs(result))
-check("5 일반 사용자: 로그인 후 질의응답 탭으로 이동", result[8].selected == "chat", result[8].selected)
+check("5 일반 사용자: 로그인 후 보고서 탭으로 이동", result[8].selected == "report", result[8].selected)
 check("6 돌려주는 값은 그대로 11개", len(result) == 11, len(result))
 
 print(f"\n통과 {passed}/{total}")

@@ -193,7 +193,7 @@ check("5 admin 로그인: 관리자 탭 보임, 사용자 탭 4개 숨김", admi
 check("6 admin 로그인: 관리자 탭으로 이동", admin_result[8].selected == "admin", admin_result[8].selected)
 
 user_result = on_login("kim", "1234")
-check("7 일반 사용자 로그인: 관리자 탭 숨김, 질의응답 탭으로 이동", user_result[6]["visible"] == False and user_result[8].selected == "chat", user_result[8].selected)
+check("7 일반 사용자 로그인: 관리자 탭 숨김, 보고서 탭으로 이동", user_result[6]["visible"] == False and user_result[8].selected == "report", user_result[8].selected)
 
 print(f"\n통과 {passed}/{total}")
 

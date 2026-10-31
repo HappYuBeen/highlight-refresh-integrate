@@ -1,8 +1,9 @@
 """지표 비교 · extract_indicators, build_compare_table, plot_indicators (장유빈)"""
+import html
 import logging
 import re
 import uuid
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -193,7 +194,7 @@ def extract_indicators(report_id: int) -> list[Indicator]:
 
 # =====================================================================
 # [장유빈] 지표 비교 · build_compare_table, plot_indicators (WBS 3.5.12)
-# 선택한 보고서들의 지표를 같은 이름·시점·단위끼리 모아 표(Markdown)와 막대 차트(PNG)로 보여 준다
+# 선택한 보고서들의 지표를 같은 이름·시점·단위끼리 모아 표(HTML)와 막대 차트(PNG)로 보여 준다
 # =====================================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # hri/service/indicator_service.py → 프로젝트 맨 위 폴더
@@ -206,12 +207,21 @@ EMPTY_CELL = "-"  # 그 보고서에 없는 지표 칸
 REVIEW_MARK = "*"  # 차트에서 읽어 확인이 필요한 값(needs_review) 표시
 REVIEW_NOTE = f"{REVIEW_MARK} 차트에서 읽은 추정값이라 확인이 필요합니다."
 DIFF_HEADER = "차이(최대−최소)"  # 보고서 2개 이상을 비교할 때 표 맨 끝에 붙이는 열 이름
-ECOS_TITLE = "### ECOS 참고 (한국은행)"  # 표 아래에 붙이는 ECOS 섹션 제목
-ECOS_NOTE = "ECOS 값은 한국은행 통계라서 보고서 수치와 기준(계절조정·전기비 등)이 다를 수 있습니다."
+ECOS_NOTE = "ECOS 값은 한국은행 경제 통계 시스템의 데이터입니다. 보고서 수치와 기준(계절조정·전기비 등)이 다를 수 있습니다."
 MAX_ECOS_ROWS = 6  # ECOS 값은 최근 몇 줄까지 보여 줄지
 MAX_UNIT_GROUPS = 3  # 차트 하나에 그리는 단위 묶음 수 (단위가 같은 지표끼리 한 칸)
 MAX_BARS_PER_GROUP = 8  # 한 칸에 그리는 지표·시점 수 (너무 많으면 글자가 겹친다)
+MAX_BAR_WIDTH = 0.25  # 막대 하나의 최대 두께 (가로축 한 자리 = 1). 보고서가 적어도 막대 사이에 여백이 남는다
+MIN_BAR_SLOTS = 4  # 지표·시점이 적어도 가로축을 이만큼은 잡아 막대가 너무 넓어지지 않게 한다 (남는 자리는 빈칸)
 LEGEND_TITLE_LENGTH = 20  # 범례에 쓰는 보고서 제목의 최대 글자 수
+TITLE_LENGTH = 15  # 비교 표 머리글의 보고서 이름 칸 너비(글자 수). 넘으면 앞 TITLE_KEEP글자 + '...'
+TITLE_KEEP = 12
+# 비교 표 열 너비 계산 (단위 em). 한글·한자는 1글자 1em, 그 밖의 글자는 0.6em으로 어림한다
+WIDE_CHAR_EM = 1.0
+NARROW_CHAR_EM = 0.6
+CELL_PAD_EM = 1.6  # 칸 좌우 여백
+NAME_SPARE_EM = 1.0  # 지표 열은 가장 긴 지표 이름보다 이만큼 여유를 둔다
+NAME_MAX_RATIO = 0.2  # 지표 열은 표 전체 너비의 20%를 넘지 않는다
 
 # (지표 이름, 시점, 단위) → {report_id: Indicator}
 _Rows = dict[tuple[str, str, str], dict[int, Indicator]]
@@ -223,24 +233,23 @@ def _format_value(value: float) -> str:
 	return "0" if text in ("-0", "") else text
 
 
-def _file_name(file_path: str) -> str:
-	"""저장 경로(data/raw/sample.pdf)에서 파일 이름(sample.pdf)만 꺼낸다. 경로가 비어 있으면 ''."""
-	return PurePosixPath((file_path or "").replace("\\", "/")).name
+def _fit_title(title: str) -> str:
+	"""비교 표 머리글용 이름: TITLE_LENGTH글자를 넘으면 앞 TITLE_KEEP글자 + '...'로 줄인다."""
+	return title if len(title) <= TITLE_LENGTH else title[:TITLE_KEEP] + "..."
 
 
-def _report_titles(report_ids: list[int], with_file: bool = False) -> dict[int, str]:
+def _report_titles(report_ids: list[int], fit: bool = False) -> dict[int, str]:
 	"""report_id → 표 머리글·차트 범례에 쓸 보고서 이름.
 
-	with_file이면 '제목 (파일명.pdf)'처럼 업로드한 파일 이름을 붙인다 (파일 경로를 모르면 제목만).
-	이름이 같은 보고서가 있으면 '이름 (#번호)'로 구분한다.
+	보고서 선택 창에 보이는 이름과 같게 보고서 제목을 쓴다. fit이면 _fit_title()로 길이를 맞춘다.
+	(줄인 뒤) 이름이 같은 보고서가 있으면 '이름 (#번호)'로 구분한다.
 	"""
 	found = {r.report_id: r for r in search_reports("")}
 	titles: dict[int, str] = {}
 	for rid in report_ids:
 		report = found.get(rid)
 		title = (report.title if report else "") or f"보고서 #{rid}"
-		file_name = _file_name(getattr(report, "file_path", "")) if report and with_file else ""
-		titles[rid] = f"{title} ({file_name})" if file_name else title
+		titles[rid] = _fit_title(title) if fit else title
 	counts: dict[str, int] = {}
 	for title in titles.values():
 		counts[title] = counts.get(title, 0) + 1
@@ -260,8 +269,15 @@ def _collect_rows(report_ids: list[int]) -> _Rows:
 
 
 def _sorted_keys(rows: _Rows) -> list[tuple[str, str, str]]:
-	"""여러 보고서에 함께 나온 지표가 위로 오게 정렬한다. 같으면 이름·시점·단위 순."""
-	return sorted(rows, key=lambda key: (-len(rows[key]), key))
+	"""공통 지표가 위로 오게 정렬한다.
+
+	1) 같은 (이름, 시점, 단위)가 나온 보고서가 많은 행, 2) 시점·단위가 달라도 같은 이름이 나온 보고서가 많은 지표,
+	3) 이름·시점·단위 순. 그래서 보고서마다 시점만 다른 지표도 혼자만 나온 지표보다 위에 모여 보인다.
+	"""
+	name_reports: dict[str, set[int]] = {}
+	for (name, _, _), by_report in rows.items():
+		name_reports.setdefault(name, set()).update(by_report)
+	return sorted(rows, key=lambda key: (-len(rows[key]), -len(name_reports[key[0]]), key))
 
 
 def _escape_cell(text: str) -> str:
@@ -273,6 +289,54 @@ def _rows_to_markdown(header: list[str], body: list[list[str]]) -> str:
 	"""머리글과 행 목록을 Markdown 표 문자열로 만든다. (table_to_markdown(엄정현)이 들어오면 그것으로 바꾼다)"""
 	lines = ["| " + " | ".join(header) + " |", "| " + " | ".join("---" for _ in header) + " |"]
 	lines.extend("| " + " | ".join(row) + " |" for row in body)
+	return "\n".join(lines)
+
+
+def _text_em(text: str) -> float:
+	"""글자가 차지할 너비를 em으로 어림한다 (한글·한자 1em, 나머지 0.6em)."""
+	return sum(WIDE_CHAR_EM if _is_wide(ch) else NARROW_CHAR_EM for ch in text)
+
+
+def _is_wide(ch: str) -> bool:
+	"""한글 자모·한중일 문자·한글 음절·전각 글자면 True."""
+	code = ord(ch)
+	return 0x1100 <= code <= 0x11FF or 0x2E80 <= code <= 0xD7AF or 0xF900 <= code <= 0xFAFF or 0xFF00 <= code <= 0xFFEF
+
+
+def _column_widths(header: list[str], body: list[list[str]], report_count: int) -> list[float]:
+	"""비교 표 열 너비(em)를 정한다.
+
+	- 보고서 열(4번째부터 report_count개)은 이름 TITLE_LENGTH글자에 맞춘 같은 너비
+	- 지표 열은 가장 긴 지표 이름 + 여유, 다만 표 전체의 NAME_MAX_RATIO(20%)를 넘지 않는다
+	- 나머지(시점·단위·차이) 열은 머리글·칸 중 가장 긴 글자에 맞춘다
+	"""
+	columns = list(zip(header, *body))
+	widths = [max(_text_em(text) for text in column) + CELL_PAD_EM for column in columns]
+	for i in range(3, 3 + report_count):
+		widths[i] = TITLE_LENGTH * WIDE_CHAR_EM + CELL_PAD_EM
+	name_width = max(_text_em(name) for name in columns[0][1:]) + CELL_PAD_EM + NAME_SPARE_EM
+	# 지표 열 = 표 전체 × 비율  →  지표 열 = 나머지 열 합 × 비율 / (1 − 비율)
+	name_max = sum(widths[1:]) * NAME_MAX_RATIO / (1 - NAME_MAX_RATIO)
+	widths[0] = min(name_width, name_max)
+	return widths
+
+
+def _rows_to_html(header: list[str], body: list[list[str]], widths: list[float], titles: list[str | None]) -> str:
+	"""머리글·행을 열 너비가 고정된 HTML 표로 만든다. titles는 머리글에 마우스를 올리면 보일 전체 이름(없으면 None)."""
+	cols = "".join(f'<col style="width:{w:.1f}em">' for w in widths)
+	head = "".join(
+		f'<th title="{html.escape(full)}">{html.escape(text)}</th>' if full else f"<th>{html.escape(text)}</th>"
+		for text, full in zip(header, titles)
+	)
+	lines = [
+		f'<table class="compare-grid" style="width:{sum(widths):.1f}em;table-layout:fixed">',
+		f"<colgroup>{cols}</colgroup>",
+		f"<thead><tr>{head}</tr></thead>",
+		"<tbody>",
+		*("<tr>" + "".join(f"<td>{html.escape(cell)}</td>" for cell in row) + "</tr>" for row in body),
+		"</tbody>",
+		"</table>",
+	]
 	return "\n".join(lines)
 
 
@@ -296,24 +360,27 @@ def _diff_cell(items: list[Indicator], unit: str) -> str:
 
 
 def build_compare_table(report_ids: list[int]) -> str:
-	"""선택한 보고서들의 지표를 한 표(Markdown)로 비교한다.
+	"""선택한 보고서들의 지표를 한 표(HTML, Markdown 칸에 그대로 넣어 보여 준다)로 비교한다.
 
 	행은 (지표 이름, 시점, 단위), 열은 보고서 제목이다. 그 보고서에 없는 칸은 '-'로 채우고,
 	차트에서 읽어 확인이 필요한 값(needs_review)에는 '*'를 붙인 뒤 표 아래에 설명을 적는다.
-	열 머리글은 '제목 (파일명.pdf)'처럼 업로드한 파일 이름을 함께 적는다.
+	열 머리글은 보고서 선택 창에 보이는 보고서 제목을 15글자에 맞춘 것이다 (넘으면 앞 12글자 + '...', 전체 이름은 마우스를 올리면 보임).
 	출처 쪽을 아는 값은 '2.4 (p.12)'처럼 쪽을 함께 적고, 보고서가 2개 이상이면 맨 끝에 값 차이(최대−최소) 열을 붙인다.
-	여러 보고서에 함께 나온 지표가 위로 온다. 지표가 하나도 없으면 빈 문자열을 돌려준다.
+	공통 지표가 위로 온다 (_sorted_keys). 열 너비는 _column_widths()로 정한다. 지표가 하나도 없으면 빈 문자열을 돌려준다.
 	"""
 	report_ids = list(dict.fromkeys(report_ids))  # 중복 번호 제거 (순서 유지)
 	rows = _collect_rows(report_ids)
 	if not rows:
 		return ""
 
-	titles = _report_titles(report_ids, with_file=True)
-	header = ["지표", "시점", "단위", *(_escape_cell(titles[rid]) for rid in report_ids)]
+	titles = _report_titles(report_ids, fit=True)
+	full_titles = _report_titles(report_ids)
+	header = ["지표", "시점", "단위", *(titles[rid] for rid in report_ids)]
+	header_titles: list[str | None] = [None, None, None, *(full_titles[rid] for rid in report_ids)]
 	with_diff = len(report_ids) >= 2  # 보고서가 하나뿐이면 비교할 대상이 없어 차이 열을 두지 않는다
 	if with_diff:
 		header.append(DIFF_HEADER)
+		header_titles.append(None)
 	body = []
 	has_review = False
 	for key in _sorted_keys(rows):
@@ -327,9 +394,9 @@ def build_compare_table(report_ids: list[int]) -> str:
 			cells.append(_format_cell(item))
 		if with_diff:
 			cells.append(_diff_cell(list(rows[key].values()), key[2]))
-		body.append([_escape_cell(key[0]), key[1], _escape_cell(key[2]) or EMPTY_CELL, *cells])
+		body.append([key[0], key[1], key[2] or EMPTY_CELL, *cells])
 
-	table = _rows_to_markdown(header, body)
+	table = _rows_to_html(header, body, _column_widths(header, body, len(report_ids)), header_titles)
 	return f"{table}\n\n{REVIEW_NOTE}" if has_review else table
 
 def build_ecos_reference(report_ids: list[int]) -> str:
@@ -356,7 +423,7 @@ def build_ecos_reference(report_ids: list[int]) -> str:
 		return ""
 
 	name = query.indicator_name.strip()
-	titles = _report_titles(report_ids, with_file=True)
+	titles = _report_titles(report_ids)
 	body = []
 	for rid in report_ids:
 		for item in by_report[rid]:
@@ -367,7 +434,7 @@ def build_ecos_reference(report_ids: list[int]) -> str:
 
 	table = _rows_to_markdown(["구분", "시점", "값", "단위"], body)
 	reason = f"비교한 지표: {name}" + (f" ({query.reason})" if query.reason else "")
-	return f"{ECOS_TITLE}\n\n{reason}\n\n{table}\n\n{ECOS_NOTE}"
+	return f"{reason}\n\n{table}\n\n{ECOS_NOTE}"
 
 
 def _use_korean_font() -> str | None:
@@ -401,7 +468,8 @@ def plot_indicators(report_ids: list[int]) -> str | None:
 
 	단위가 같은 지표끼리만 한 칸에 그린다 (%와 원을 한 축에 섞지 않는다). 칸마다 가로축은 '지표·시점',
 	막대 색은 보고서다. 2개 이상의 보고서에 함께 나온 지표만 그리고, 차트에서 읽은 추정값(needs_review)은
-	빗금 막대에 '*'를 붙인다. 파일 이름에 uuid를 붙여 동시에 써도 겹치지 않는다.
+	빗금 막대에 '*'를 붙인다. 모든 칸은 가로축 자리 수(최소 MIN_BAR_SLOTS)가 같아 막대 두께가 같고,
+	지표가 적은 칸은 오른쪽이 빈칸으로 남는다. 파일 이름에 uuid를 붙여 동시에 써도 겹치지 않는다.
 	그릴 지표가 없으면(공통 지표 없음) None을 돌려준다.
 	"""
 	import matplotlib
@@ -428,12 +496,13 @@ def plot_indicators(report_ids: list[int]) -> str | None:
 		rc["font.family"] = font
 
 	with matplotlib.rc_context(rc):
-		longest = max(min(len(by_unit[u]), MAX_BARS_PER_GROUP) for u in units)
-		fig = Figure(figsize=(min(14, max(7, 1.4 * longest + 3)), 3.8 * len(units)))
+		# 모든 칸의 가로축 자리 수를 같게 해 막대 두께를 맞춘다. 지표가 적은 칸은 오른쪽이 빈칸으로 남는다
+		slots = max(MIN_BAR_SLOTS, max(min(len(by_unit[u]), MAX_BARS_PER_GROUP) for u in units))
+		fig = Figure(figsize=(min(14, max(7, 1.4 * slots + 3)), 3.8 * len(units)))
 		axes = fig.subplots(len(units), 1, squeeze=False)[:, 0]
 		colors = [f"C{i}" for i in range(len(report_ids))]
 		has_review = False
-		width = 0.8 / len(report_ids)
+		width = min(0.8 / len(report_ids), MAX_BAR_WIDTH)
 
 		for ax, unit in zip(axes, units):
 			keys = by_unit[unit][:MAX_BARS_PER_GROUP]
@@ -454,6 +523,7 @@ def plot_indicators(report_ids: list[int]) -> str | None:
 						bar.set_alpha(0.6)
 				ax.bar_label(bars, labels=[_format_value(h) + (REVIEW_MARK if r else "") for h, r in zip(heights, reviews)], fontsize=8, padding=2)
 			ax.set_xticks(range(len(keys)), labels, fontsize=9)
+			ax.set_xlim(-0.5, slots - 0.5)
 			ax.set_ylabel(unit or "단위 없음")
 			ax.axhline(0, color="gray", linewidth=0.6)
 			ax.margins(y=0.15)

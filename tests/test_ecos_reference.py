@@ -27,7 +27,7 @@ def _use_ecos(monkeypatch, query, values):
 def fake_reports(monkeypatch):
 	data = {1: [_ind(1, value=2.1), _ind(1, name="실업률", value=3.0)], 2: [_ind(2, value=1.9)]}
 	monkeypatch.setattr(indicator_service, "extract_indicators", lambda rid: data.get(rid, []))
-	monkeypatch.setattr(indicator_service, "_report_titles", lambda ids, with_file=False: {1: "보고서A", 2: "보고서B"})
+	monkeypatch.setattr(indicator_service, "_report_titles", lambda ids: {1: "보고서A", 2: "보고서B"})
 
 
 def test_reference_shows_report_and_ecos_values(monkeypatch):
@@ -52,14 +52,14 @@ def test_reference_empty_without_query_or_values(monkeypatch):
 	assert indicator_service.build_ecos_reference([1, 2]) == ""
 
 
-def test_on_compare_appends_ecos_section(monkeypatch):
+def test_on_compare_returns_ecos_section_separately(monkeypatch):
 	monkeypatch.setattr(indicator_view, "build_compare_table", lambda ids: "표")
 	monkeypatch.setattr(indicator_view, "plot_indicators", lambda ids: "chart.png")
 	monkeypatch.setattr(indicator_view, "build_ecos_reference", lambda ids: "ECOS 섹션")
 
-	table, image = indicator_view.on_compare([1, 2], progress=lambda *a, **k: None)
+	table, ecos, image, _ = indicator_view.on_compare([1, 2], progress=lambda *a, **k: None)
 
-	assert table == "표\n\nECOS 섹션" and image == "chart.png"
+	assert table == "표" and ecos == "ECOS 섹션" and image == "chart.png"
 
 
 def test_on_compare_keeps_table_when_ecos_fails(monkeypatch):
@@ -70,6 +70,6 @@ def test_on_compare_keeps_table_when_ecos_fails(monkeypatch):
 	monkeypatch.setattr(indicator_view, "plot_indicators", lambda ids: "chart.png")
 	monkeypatch.setattr(indicator_view, "build_ecos_reference", broken)
 
-	table, image = indicator_view.on_compare([1, 2], progress=lambda *a, **k: None)
+	table, ecos, image, _ = indicator_view.on_compare([1, 2], progress=lambda *a, **k: None)
 
-	assert table == "표" and image == "chart.png"
+	assert table == "표" and ecos == "" and image == "chart.png"

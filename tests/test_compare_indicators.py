@@ -1,4 +1,6 @@
 """지표 비교표·차트 로직 테스트 · 가짜 지표·보고서 목록 사용 (장유빈)"""
+import html
+import re
 from pathlib import Path
 
 import pytest
@@ -32,7 +34,21 @@ class _RF(_R):
 
 
 def _lines(table: str) -> list[str]:
-	return table.splitlines()
+	"""HTML 비교 표를 읽기 쉬운 '| 칸 | 칸 |' 줄로 바꾼다 (머리글 다음에 '| --- |' 줄, 표 아래 문구는 그대로)."""
+	lines = []
+	for line in table.splitlines():
+		cells = [html.unescape(c) for c in re.findall(r"<t[hd](?: [^>]*)?>(.*?)</t[hd]>", line)]
+		if line.startswith("<thead>"):
+			lines += ["| " + " | ".join(cells) + " |", "| " + " | ".join("---" for _ in cells) + " |"]
+		elif line.startswith("<tr>"):
+			lines.append("| " + " | ".join(cells) + " |")
+		elif line and not line.startswith("<"):
+			lines.append(line)
+	return lines
+
+
+def _text(table: str) -> str:
+	return "\n".join(_lines(table))
 
 
 # ---------------- build_compare_table ----------------
@@ -60,13 +76,13 @@ def test_shared_rows_come_first(monkeypatch):
 def test_needs_review_gets_star_and_note(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=1390.0, unit="원", needs_review=True)], 2: [_ind(value=1380.0, unit="원")]}, {1: "A", 2: "B"})
 	table = build_compare_table([1, 2])
-	assert "| 1,390* | 1,380 |" in table
+	assert "| 1,390* | 1,380 |" in _text(table)
 	assert table.splitlines()[-1].startswith("*")
 
 
 def test_no_note_without_review(monkeypatch):
 	_use(monkeypatch, {1: [_ind()], 2: [_ind()]})
-	assert "*" not in build_compare_table([1, 2])
+	assert "*" not in _text(build_compare_table([1, 2]))
 
 
 def test_same_unit_different_period_are_different_rows(monkeypatch):
@@ -77,7 +93,7 @@ def test_same_unit_different_period_are_different_rows(monkeypatch):
 
 def test_first_value_wins_when_report_repeats_a_row(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=2.0), _ind(value=2.5)], 2: [_ind()]})
-	assert "| 2 | 2 |" in build_compare_table([1, 2])
+	assert "| 2 | 2 |" in _text(build_compare_table([1, 2]))
 
 
 def test_duplicate_titles_get_report_id(monkeypatch):
@@ -90,9 +106,9 @@ def test_unknown_report_gets_fallback_title(monkeypatch):
 	assert _lines(build_compare_table([1, 2]))[0].endswith("| A | 보고서 #2 | 차이(최대−최소) |")
 
 
-def test_pipe_in_title_is_escaped(monkeypatch):
+def test_pipe_in_title_is_kept(monkeypatch):
 	_use(monkeypatch, {1: [_ind()], 2: [_ind()]}, {1: "A|B", 2: "C"})
-	assert "A\\|B" in build_compare_table([1, 2])
+	assert "| A|B | C |" in _text(build_compare_table([1, 2]))
 
 
 def test_duplicate_report_ids_are_merged(monkeypatch):
@@ -102,7 +118,7 @@ def test_duplicate_report_ids_are_merged(monkeypatch):
 
 def test_empty_unit_is_dash(monkeypatch):
 	_use(monkeypatch, {1: [_ind(unit="")], 2: [_ind(unit="")]})
-	assert "| 경제성장률 | 2027 | - |" in build_compare_table([1, 2])
+	assert "| 경제성장률 | 2027 | - |" in _text(build_compare_table([1, 2]))
 
 
 def test_no_indicators_returns_empty_string(monkeypatch):
@@ -180,17 +196,17 @@ def test_page_is_shown_next_to_value(monkeypatch):
 
 def test_page_is_omitted_when_unknown(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=2.0, page=12)], 2: [_ind(value=2.4)]})
-	assert "| 2 (p.12) | 2.4 |" in build_compare_table([1, 2])
+	assert "| 2 (p.12) | 2.4 |" in _text(build_compare_table([1, 2]))
 
 
 def test_page_goes_after_review_star(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=1390.0, unit="원", needs_review=True, page=7)], 2: [_ind(value=1380.0, unit="원")]})
-	assert "| 1,390* (p.7) | 1,380 |" in build_compare_table([1, 2])
+	assert "| 1,390* (p.7) | 1,380 |" in _text(build_compare_table([1, 2]))
 
 
 def test_page_comes_from_the_value_that_wins(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=2.0, page=5), _ind(value=2.5, page=9)], 2: [_ind()]})
-	assert "| 2 (p.5) |" in build_compare_table([1, 2])
+	assert "| 2 (p.5) |" in _text(build_compare_table([1, 2]))
 
 
 # ---------------- 차이 열 ----------------
@@ -227,7 +243,7 @@ def test_diff_dash_when_only_one_report_has_value(monkeypatch):
 def test_diff_gets_star_when_a_value_needs_review(monkeypatch):
 	_use(monkeypatch, {1: [_ind(value=2.0, needs_review=True)], 2: [_ind(value=2.4)]})
 	table = build_compare_table([1, 2])
-	assert "| 2* | 2.4 | 0.4%p* |" in table
+	assert "| 2* | 2.4 | 0.4%p* |" in _text(table)
 	assert table.splitlines()[-1].startswith("*")
 
 
@@ -236,39 +252,97 @@ def test_single_report_has_no_diff_column(monkeypatch):
 	assert _lines(build_compare_table([1]))[0] == "| 지표 | 시점 | 단위 | A |"
 
 
-# ---------------- 열 머리글의 파일명 ----------------
+# ---------------- 열 머리글 = 보고서 선택 창의 이름 ----------------
 def _use_files(monkeypatch, files: dict):
 	"""보고서 목록을 (제목, 저장 경로)가 있는 가짜로 바꾼다. files는 {report_id: (title, file_path)}."""
 	_use(monkeypatch, {rid: [_ind()] for rid in files})
 	monkeypatch.setattr(indicator_service, "search_reports", lambda keyword="": [_RF(rid, t, p) for rid, (t, p) in files.items()])
 
 
-def test_header_shows_file_name(monkeypatch):
+def test_header_shows_title_without_file_name(monkeypatch):
 	_use_files(monkeypatch, {1: ("2026 경제전망", "data/raw/a.pdf"), 2: ("2027 경제전망", "data/raw/b.pdf")})
-	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | 2026 경제전망 (a.pdf) | 2027 경제전망 (b.pdf) | 차이(최대−최소) |"
+	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | 2026 경제전망 | 2027 경제전망 | 차이(최대−최소) |"
 
 
-def test_file_name_from_windows_path(monkeypatch):
-	_use_files(monkeypatch, {1: ("A", "data\\raw\\한글 보고서.pdf"), 2: ("B", "")})
-	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | A (한글 보고서.pdf) | B | 차이(최대−최소) |"
-
-
-def test_same_title_and_file_gets_report_id(monkeypatch):
-	_use_files(monkeypatch, {1: ("같은 제목", "data/raw/a.pdf"), 2: ("같은 제목", "data/raw/a.pdf")})
-	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | 같은 제목 (a.pdf) (#1) | 같은 제목 (a.pdf) (#2) | 차이(최대−최소) |"
-
-
-def test_same_title_different_files_need_no_report_id(monkeypatch):
+def test_same_title_gets_report_id(monkeypatch):
 	_use_files(monkeypatch, {1: ("같은 제목", "data/raw/a.pdf"), 2: ("같은 제목", "data/raw/b.pdf")})
-	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | 같은 제목 (a.pdf) | 같은 제목 (b.pdf) | 차이(최대−최소) |"
+	assert _lines(build_compare_table([1, 2]))[0] == "| 지표 | 시점 | 단위 | 같은 제목 (#1) | 같은 제목 (#2) | 차이(최대−최소) |"
 
 
-def test_pipe_in_file_name_is_escaped(monkeypatch):
-	_use_files(monkeypatch, {1: ("A", "data/raw/x|y.pdf"), 2: ("B", "data/raw/b.pdf")})
-	assert "x\\|y.pdf" in build_compare_table([1, 2])
+def test_html_in_title_is_escaped(monkeypatch):
+	_use_files(monkeypatch, {1: ("<b>x</b>", "data/raw/a.pdf"), 2: ("B", "data/raw/b.pdf")})
+	table = build_compare_table([1, 2])
+	assert "<b>" not in table and "&lt;b&gt;x&lt;/b&gt;" in table
 
 
-def test_chart_legend_names_have_no_file_name(monkeypatch):
+# ---------------- 보고서 이름 길이 · 열 너비 · 공통 지표 정렬 ----------------
+def test_long_title_is_cut_to_12_chars_and_dots(monkeypatch):
+	_use(monkeypatch, {1: [_ind()], 2: [_ind()]}, {1: "가" * 15, 2: "나" * 16})
+	assert _lines(build_compare_table([1, 2]))[0] == f"| 지표 | 시점 | 단위 | {'가' * 15} | {'나' * 12}... | 차이(최대−최소) |"
+
+
+def test_cut_title_keeps_full_name_as_tooltip(monkeypatch):
+	_use(monkeypatch, {1: [_ind()], 2: [_ind()]}, {1: "나" * 16, 2: "B"})
+	assert f'title="{"나" * 16}"' in build_compare_table([1, 2])
+
+
+def test_same_cut_title_gets_report_id(monkeypatch):
+	_use(monkeypatch, {1: [_ind()], 2: [_ind()]}, {1: "가" * 12 + "끝1번째", 2: "가" * 12 + "끝2번째"})
+	assert f"| {'가' * 12}... (#1) | {'가' * 12}... (#2) |" in _lines(build_compare_table([1, 2]))[0]
+
+
+def _col_widths(table: str) -> list[float]:
+	return [float(w) for w in re.findall(r'<col style="width:([\d.]+)em">', table)]
+
+
+def test_report_columns_have_same_width(monkeypatch):
+	_use(monkeypatch, {1: [_ind()], 2: [_ind()]}, {1: "A", 2: "아주 긴 보고서 이름입니다 정말로 깁니다"})
+	widths = _col_widths(build_compare_table([1, 2]))
+	assert widths[3] == widths[4]
+
+
+def test_name_column_fits_longest_name(monkeypatch):
+	_use(monkeypatch, {1: [_ind("가나"), _ind("가나다라")], 2: [_ind("가나")]})
+	widths = _col_widths(build_compare_table([1, 2]))
+	assert 4 < widths[0] < 0.2 * sum(widths)
+
+
+def test_name_column_is_at_most_20_percent(monkeypatch):
+	_use(monkeypatch, {1: [_ind("가" * 80)], 2: [_ind("가" * 80)]})
+	widths = _col_widths(build_compare_table([1, 2]))
+	assert widths[0] == pytest.approx(0.2 * sum(widths), abs=0.2)
+
+
+def test_indicator_shared_in_other_period_comes_before_single(monkeypatch):
+	_use(monkeypatch, {1: [_ind("가나다", period="2027"), _ind("실업률", period="2027")], 2: [_ind("실업률", period="2028")]})
+	names = [line.split(" | ")[0].strip("| ") for line in _lines(build_compare_table([1, 2]))[2:]]
+	assert names == ["실업률", "실업률", "가나다"]
+
+
+def test_report_titles_have_no_file_name(monkeypatch):
 	_use_files(monkeypatch, {1: ("A", "data/raw/a.pdf"), 2: ("B", "data/raw/b.pdf")})
 	assert indicator_service._report_titles([1, 2]) == {1: "A", 2: "B"}
-	assert indicator_service._report_titles([1, 2], with_file=True) == {1: "A (a.pdf)", 2: "B (b.pdf)"}
+
+def test_plot_axes_share_slot_count_and_bar_width(monkeypatch, tmp_path):
+	"""지표 수가 다른 칸도 가로축 자리 수가 같아 막대 두께가 같다 (적은 칸은 빈칸이 남는다)."""
+	from matplotlib.figure import Figure
+
+	saved = []
+	monkeypatch.setattr(Figure, "savefig", lambda self, path, **k: saved.append(self))
+	items = lambda base: [_ind(f"지표{i}", base + i, "%") for i in range(6)] + [_ind("환율", 1390.0 + base, "원")]
+	_use(monkeypatch, {1: items(1.0), 2: items(1.5)}, plot_dir=tmp_path)
+	plot_indicators([1, 2])
+	axes = saved[0].axes
+	assert axes[0].get_xlim() == axes[1].get_xlim() == (-0.5, 5.5)
+	widths = {round(p.get_width(), 6) for ax in axes for p in ax.patches}
+	assert widths == {indicator_service.MAX_BAR_WIDTH}
+
+
+def test_plot_keeps_min_slots_with_few_indicators(monkeypatch, tmp_path):
+	from matplotlib.figure import Figure
+
+	saved = []
+	monkeypatch.setattr(Figure, "savefig", lambda self, path, **k: saved.append(self))
+	_use(monkeypatch, {1: [_ind(value=2.0)], 2: [_ind(value=2.4)]}, plot_dir=tmp_path)
+	plot_indicators([1, 2])
+	assert saved[0].axes[0].get_xlim() == (-0.5, indicator_service.MIN_BAR_SLOTS - 0.5)

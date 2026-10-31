@@ -56,7 +56,7 @@ def load_settings() -> Settings:
 		chroma_password=os.getenv("CHROMA_PASSWORD"),
 		llm_model=os.getenv("LLM_MODEL", "gpt-6-luna"),
 		vision_model=os.getenv("VISION_MODEL", "gpt-6-luna"),
-		model_prices=os.getenv("MODEL_PRICES", '{"gpt-6-luna": {"input": 0.1, "output": 0.5}'),
+		model_prices=os.getenv("MODEL_PRICES", '{"gpt-6-luna": {"input": 0.1, "output": 0.5}}'),
 		ocr_langs=os.getenv("OCR_LANGS", "ko,en"),
 		ocr_min_conf=os.getenv("OCR_MIN_CONF", "0.4"),
 		chart_dpi=os.getenv("CHART_DPI", "200"),

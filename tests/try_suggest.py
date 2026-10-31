@@ -141,7 +141,7 @@ history_view.build_history_tab = fake_build_history_tab
 make_fake_tab("hri.view.admin_view", "build_admin_tab", "관리자", "admin")
 
 indicator_view = make_fake_module("hri.view.indicator_view")
-indicator_view.on_compare = lambda report_ids: ("※ 가짜 비교표", None)
+indicator_view.on_compare = lambda report_ids: ("※ 가짜 비교표", "", None)
 
 
 # ----------------------------------------------------------------

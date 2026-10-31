@@ -57,11 +57,14 @@ def test_select_out_of_range():
 	assert message == NEED_SELECT_MESSAGE
 
 
-def test_go_buttons_move_tab_with_selected_report():
-	tabs, dropdown = on_view_summary({"report_ids": [5]})
-	assert tabs["selected"] == report_view.SUMMARY_TAB_ID and dropdown["value"] == 5
+def test_go_buttons_move_tab_with_selected_report(monkeypatch):
+	monkeypatch.setattr(report_view, "search_reports", lambda *a, **k: [_report(5, "A"), _report(6, "B")])
+	tabs, dropdown = on_view_summary({"report_ids": [5, 9]})
+	assert tabs["selected"] == report_view.SUMMARY_TAB_ID
+	# 선택지도 함께 채우고, 값은 목록에 있는 번호만 리스트로 (CheckboxGroup)
+	assert dropdown["choices"] == [("A", 5), ("B", 6)] and dropdown["value"] == [5]
 	tabs, dropdown = on_go_chat({"report_ids": [5]})
-	assert tabs["selected"] == report_view.CHAT_TAB_ID and dropdown["value"] == 5
+	assert tabs["selected"] == report_view.CHAT_TAB_ID and dropdown["value"] == [5]
 
 
 def test_go_buttons_without_selection_stay(monkeypatch):

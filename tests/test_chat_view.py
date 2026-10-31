@@ -59,9 +59,9 @@ def _run(**kwargs):
 def test_streams_text_and_final_result(monkeypatch):
 	_use_stream(monkeypatch, ["안", "녕", _result(answer="안녕", sources=[_source()], suggestions=["다음 질문?"], log_id=9)])
 	outputs = _run()
-	# 처음: 입력칸 비우기 + 빈 답변 칸
+	# 처음: 입력칸 비우기 + 첫 글자 조각이 올 때까지 준비 중 문구
 	assert outputs[0][1] == ""
-	assert outputs[0][0][-2:] == [{"role": "user", "content": "질문"}, {"role": "assistant", "content": ""}]
+	assert outputs[0][0][-2:] == [{"role": "user", "content": "질문"}, {"role": "assistant", "content": chat_view.THINKING_MESSAGE}]
 	# 글자가 이어 붙는다
 	assert [o[0][-1]["content"] for o in outputs[1:3]] == ["안", "안녕"]
 	# 마지막: 최종 답변·출처·추천 질문·기록 번호
@@ -222,7 +222,7 @@ def test_build_and_connect_do_not_raise():
 		connect_chat_events(state)
 	assert isinstance(tab, gr.Tab)
 	assert tab.id == "chat"
-	assert tab.visible is False
+	assert tab.visible is True  # 로그인 전에는 build_app()이 탭 줄을 통째로 숨긴다
 	components = chat_view.chat_components
 	assert len(components["suggest_buttons"]) == 3
 	assert components["persona"].value == "실무자"
