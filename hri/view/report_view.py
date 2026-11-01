@@ -41,6 +41,7 @@ def build_report_list_panel(state: gr.State | None = None):
 				placeholder="제목 또는 발행기관 (비워 두고 검색하면 전체 목록)",
 				container=False,
 				scale=2,
+				elem_id="report-keyword",  # 테두리 스타일은 chat_view.CHAT_TITLE_STYLE의 질문 입력칸과 같이 씀
 			)
 			search_btn = gr.Button("검색", variant="primary", scale=0, min_width=90)
 

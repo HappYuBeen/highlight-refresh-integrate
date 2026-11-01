@@ -93,6 +93,11 @@ SUMMARY_TAB_STYLE = """
 	padding-top: 0.75rem;
 	border-top: 1px solid var(--border-color-primary);
 }
+/* 요약·병합 버튼: 높이를 키우고 글자도 크게 (보고서 목록은 남는 높이를 쓰므로 버튼이 커진 만큼 줄어든다) */
+#summary-actions button {
+	height: 5.25rem !important;
+	font-size: 1.2rem !important;
+}
 /* 보고서를 최대 개수(MAX_SELECTED_REPORTS, 5개)만큼 고르면 나머지 보고서는 흐리게 하고 누를 수 없게 함
    (Gradio가 고른 보고서 줄에 selected 클래스를 붙인다) */
 #summary-report-list [data-testid="checkbox-group"]:has(> label.selected ~ label.selected ~ label.selected ~ label.selected ~ label.selected) > label:not(.selected) {
@@ -107,6 +112,12 @@ SUMMARY_TAB_STYLE = """
 }
 #summary-page-label {
 	text-align: center;
+}
+/* 요약하는 동안 Gradio가 출력 칸에 두르는 파란 테두리(.generating)를 페이지 넘김 줄에서는 숨김 */
+#summary-pager.generating,
+#summary-pager .generating {
+	border: none !important;
+	animation: none !important;
 }
 </style>
 """

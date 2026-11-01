@@ -42,9 +42,24 @@ LOGOUT_STYLE = """
 }
 #logout-row button {
 	position: absolute;
-	top: 0;
+	top: -0.5rem;  /* 탭 줄 아래 선에 걸치지 않게 조금 올림 */
 	right: 0;
 	z-index: 1;  /* 뒤에 오는 탭 줄이 버튼을 덮어 클릭이 안 되지 않게 */
+}
+</style>
+"""
+
+# 모든 탭의 칸 제목(gr.Markdown("#### ...")) 오른쪽에 생기는 위아래 스크롤 화살표 숨기기
+# (제목 하나만 있는 Markdown 칸에만 적용해서 보고서 목록·결과 칸 등 다른 스크롤은 그대로 둔다)
+TITLE_SCROLL_STYLE = """
+<style>
+.block:not(:has(.block)):has(h4:only-child),
+.block:not(:has(.block)):has(h4:only-child) * {
+	scrollbar-width: none;
+}
+.block:not(:has(.block)):has(h4:only-child)::-webkit-scrollbar,
+.block:not(:has(.block)):has(h4:only-child) *::-webkit-scrollbar {
+	display: none;
 }
 </style>
 """
@@ -480,4 +495,4 @@ def main():
 	# 화면 띄우기
 	demo = build_app()
 	# 스타일은 head로 한 번에 넣는다 (화면 안에 빈 HTML 칸을 만들면 위쪽 여백이 생겨서)
-	demo.launch(server_port=7860, theme=APP_THEME, footer_links=[], head=LOGIN_BOX_STYLE + HISTORY_TABLE_STYLE + LOGOUT_STYLE + CHAT_TITLE_STYLE + SUMMARY_TAB_STYLE + ADMIN_SCROLLBAR_STYLE + COMPARE_TABLE_STYLE + COMPARE_TABLE_SCRIPT)
+	demo.launch(server_port=7860, theme=APP_THEME, footer_links=[], head=LOGIN_BOX_STYLE + HISTORY_TABLE_STYLE + LOGOUT_STYLE + TITLE_SCROLL_STYLE +CHAT_TITLE_STYLE + SUMMARY_TAB_STYLE + ADMIN_SCROLLBAR_STYLE + COMPARE_TABLE_STYLE + COMPARE_TABLE_SCRIPT)
