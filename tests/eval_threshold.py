@@ -1,7 +1,7 @@
-"""4.1.3 할루시네이션·THRESHOLD 점검 스크립트 (서동안)
+"""4.1.2 할루시네이션·THRESHOLD 점검 스크립트 (서동안)
 
 질의응답 설계서(docs/qa_design.md) 4장 '값을 정하는 방법'을 그대로 실행한다.
-	1. 보고서 안 질문 30개(4.1.2 정답셋)와 밖 질문 16개(qa_out_of_scope.json)를 준비한다.
+	1. 보고서 안 질문 30개(4.1.1 정답셋)와 밖 질문 16개(qa_out_of_scope.json)를 준비한다.
 	2. 질문마다 1등 검색 결과의 score를 기록한다.
 	3. 안쪽 질문의 최저 score와 바깥쪽 질문의 최고 score 사이에서 기준값을 정한다.
 	4. 두 범위가 겹치면 지어냄을 줄이는 쪽(높은 값)을 우선한다.
@@ -13,7 +13,7 @@
 	  실제 근거 없음 판정과 같은 기준이라 THRESHOLD를 정할 때는 이 값을 쓴다 (질문마다 LLM 1회 추가).
 
 할루시네이션 점검(--run-out)
-	밖 질문 16개를 현재 THRESHOLD로 실제 실행(4.1.2와 같은 그래프 우회 방식)해 답변을 기록한다.
+	밖 질문 16개를 현재 THRESHOLD로 실제 실행(4.1.1과 같은 그래프 우회 방식)해 답변을 기록한다.
 	route=no_answer이거나 답변이 '자료에 없습니다'면 통과, 다른 내용으로 답하면 할루시네이션 후보.
 	검색을 통과한 근접 함정 질문에서 few-shot ②·규칙 system이 '자료에 없습니다'를 이끄는지 확인한다.
 
@@ -185,7 +185,7 @@ def build_summary(questions, table, rec, rec_note, current, expansion, answers, 
 	min_in = min(ins, key=lambda q: q["score_eff"]) if ins else None
 	max_out = max(outs, key=lambda q: q["score_eff"]) if outs else None
 
-	lines = ["# 4.1.3 할루시네이션·THRESHOLD 점검 결과", "", conditions, "",
+	lines = ["# 4.1.2 할루시네이션·THRESHOLD 점검 결과", "", conditions, "",
 		f"판단 기준 score: **{basis}** 1등 score", "",
 		"## qa_design.md 4장 표에 옮길 값", "", "| 측정 결과 | 값 |", "|---|---|",
 		f"| 보고서 안 질문의 최저 score | {min_in['score_eff']:.3f} ({min_in['id']}) |" if min_in else "| 보고서 안 질문의 최저 score | - |",
@@ -226,12 +226,12 @@ def build_summary(questions, table, rec, rec_note, current, expansion, answers, 
 # 6. 실행
 # ---------------------------------------------------------------------
 def main() -> None:
-	parser = argparse.ArgumentParser(description="4.1.3 할루시네이션·THRESHOLD 점검")
-	parser.add_argument("--answers", type=Path, default=DEFAULT_ANSWERS, help="보고서 안 질문 (4.1.2 정답셋)")
+	parser = argparse.ArgumentParser(description="4.1.2 할루시네이션·THRESHOLD 점검")
+	parser.add_argument("--answers", type=Path, default=DEFAULT_ANSWERS, help="보고서 안 질문 (4.1.1 정답셋)")
 	parser.add_argument("--out-of-scope", type=Path, default=DEFAULT_OUT_OF_SCOPE, help="보고서 밖 질문")
 	parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
 	parser.add_argument("--report-ids", help="report_id 직접 지정. 예) FX=3,PR=4,GR=5")
-	parser.add_argument("--thresholds", default="0.20:0.60:0.05", help="비교할 후보 '시작:끝:간격'")
+	parser.add_argument("--thresholds", default="0.10:0.60:0.05", help="비교할 후보 '시작:끝:간격'")
 	parser.add_argument("--expansion", action="store_true", help="확장 질문까지 포함한 1등 score (권장, 질문마다 LLM 1회)")
 	parser.add_argument("--run-out", action="store_true", help="밖 질문 16개를 실제 실행해 할루시네이션 점검")
 	parser.add_argument("--min-recall", type=float, default=0.9, help="범위가 겹칠 때 지켜야 할 안 질문 근거 찾음 비율 (기본 0.9)")

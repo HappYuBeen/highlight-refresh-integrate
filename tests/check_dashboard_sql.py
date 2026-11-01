@@ -1,4 +1,4 @@
-"""4.1.7 로그인·기록·대시보드 SQL 수치 검증 스크립트 (서동안)
+"""4.1.6 로그인·기록·대시보드 SQL 수치 검증 스크립트 (서동안)
 
 DB에 이미 쌓인 기록(qa_logs·llm_usage·users)을 그대로 읽어 파이썬으로 다시 계산하고,
 dashboard_dao·qa_log_dao·user_dao의 SQL 결과와 같은지 비교한다.
@@ -6,7 +6,8 @@ dashboard_dao·qa_log_dao·user_dao의 SQL 결과와 같은지 비교한다.
 
 비교 항목
 	대시보드 1차: 질문 TOP 10 / 자료 없음 비율 / 일자·flow·모델별 토큰과 일평균 응답 시간 / 최근 에러 20건
-	대시보드 2차: 일별 질문 수·평균 응답 시간(VIEW) / 페르소나별 질문 수(ROLLUP) / 피드백 비율 / 근거 없는 질문
+	대시보드 2차: 일별 질문 수·평균 응답 시간(VIEW) / 페르소나별 질문 수(ROLLUP) / 피드백 비율 / 근거 없는 질문 /
+	            처리 방식(route)별 질문 수(ROLLUP)
 	로그인: select_user()가 users와 같은 이름·역할을 돌려주는지, 없는 아이디는 None·login()은 LoginFailedError인지
 	기록: select_logs()가 사용자·대화별로 빠짐없이 최신순으로 돌려주는지
 	참고: 대시보드 '평균 응답 시간'(일평균의 평균, LLM 사용 기록이 있는 날만)과 전체 평균의 차이, DB 시간대
@@ -170,6 +171,14 @@ def check_dashboard_v2(raw: dict, report: Report) -> None:
 	sql_ns = sorted((r["question"], r["count"]) for r in dashboard_dao.select_no_source_questions())
 	report.check(group, "근거 없는 질문 (no_answer 2회 이상)", sql_ns, py_ns)
 
+	# 처리 방식(route)별 질문 수 + 합계 줄 (WITH ROLLUP, 합계 줄은 route=None)
+	routes = Counter(r["route"] for r in qa)
+	sql_route = dashboard_dao.select_route_ratio()
+	sql_by_route = {r["route"]: r["count"] for r in sql_route if r["route"] is not None}
+	sql_route_total = next((r["count"] for r in sql_route if r["route"] is None), 0)
+	report.check(group, "처리 방식(route)별 질문 수", sorted(sql_by_route.items()), sorted(routes.items()))
+	report.check(group, "처리 방식 합계 줄 (WITH ROLLUP)", sql_route_total, len(qa))
+
 
 # ---------------------------------------------------------------------
 # 5. 로그인·기록
@@ -238,7 +247,7 @@ def check_login_history(raw: dict, report: Report) -> None:
 # ---------------------------------------------------------------------
 def to_markdown(report: Report, raw: dict) -> str:
 	ok = sum(r[4] for r in report.rows)
-	lines = ["# 4.1.7 로그인·기록·대시보드 SQL 수치 검증", "",
+	lines = ["# 4.1.6 로그인·기록·대시보드 SQL 수치 검증", "",
 		f"실행일 {datetime.now():%Y-%m-%d %H:%M} · qa_logs {len(raw['qa'])}건 · llm_usage {len(raw['usage'])}건 · users {len(raw['users'])}명", "",
 		f"**결과: {ok}/{len(report.rows)} 일치**", "",
 		"| 묶음 | 항목 | SQL 결과 | 파이썬 재계산 | 일치 |", "|---|---|---|---|---|"]

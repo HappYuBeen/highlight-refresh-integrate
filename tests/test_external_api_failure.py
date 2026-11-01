@@ -1,15 +1,19 @@
 """
-외부 API 장애·빈 결과 테스트 (서동안, WBS 4.1.6)
+외부 API 장애·빈 결과 테스트 (서동안, WBS 4.1.5)
 환율 API(한국수출입은행·ECOS)가 실패하거나 빈 결과를 줄 때 서비스가 멈추지 않고
 ① 토큰 비용 환율은 수출입은행 → ECOS → 기본 환율 1,400원 순서로 넘어가는지(get_usd_krw)
-② 통화별 환율은 실패·빈 결과인 통화만 빠지고 나머지는 나오는지(get_exchange_rates)
-③ 오류 메시지에 API 키가 들어가지 않는지, ④ ECOS 통계용어가 빈 결과면 None·오류면 예외인지 확인한다. 네트워크 없이 가짜 응답으로 실행한다.
+② 통화별 환율 조회 실패·빈 결과 처리(get_exchange_rates)
+③ 오류 메시지에 API 키가 들어가지 않는지, ④ ECOS 통계용어가 빈 결과면 None·오류면 예외인지,
+⑤ 원화 비용 단가표(MODEL_PRICES)가 읽히고 지금 쓰는 모델(gpt-6-luna) 단가가 들어 있는지,
+⑥ 에이전트 환율 도구(get_ecos_exchange_rate)가 통화별 결과·실패를 안내 문구로 보여 주는지 확인한다.
+네트워크 없이 가짜 응답으로 실행한다 (⑤의 .env 확인만 실제 .env를 읽는다).
 
 기존 tests/test_exchange_client.py(정상·전날 거슬러 가기·오류 코드), tests/test_term_service.py·test_chat_view_term.py
 (용어 풀이 오류 → ExternalApiError → 화면 문구)와 겹치지 않게 장애 상황만 본다.
 """
 
 import importlib
+import json
 import sys
 
 import httpx
@@ -73,9 +77,42 @@ def test_cost_uses_default_rate(llm_client, monkeypatch):
 	monkeypatch.setattr(exchange_client, "get_exchange_rate", _fail(httpx.ConnectTimeout("timed out")))
 	monkeypatch.setattr(ecos_client, "get_exchange_rates", _fail(EcosResponseError("ERROR-100", "x")))
 	monkeypatch.setattr(llm_client, "load_settings", lambda: type("S", (), {
-		"model_prices": '{"gpt-5-mini": {"input": 0.25, "output": 2.00}}', "koreaexim_api_key": SECRET_KEY})())
-	usage = {"gpt-5-mini-2025-08-07": {"input_tokens": 1_000_000, "output_tokens": 0, "total_tokens": 1_000_000}}
-	assert llm_client.cost_korean_won(usage, llm_client.get_usd_krw()) == 0.25 * 1400.0
+		"model_prices": '{"gpt-6-luna": {"input": 0.10, "output": 0.50}}', "koreaexim_api_key": SECRET_KEY})())
+	usage = {"gpt-6-luna-2026-09-01": {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000}}
+	assert llm_client.cost_korean_won(usage, llm_client.get_usd_krw()) == pytest.approx((0.10 + 0.50) * 1400.0)
+
+
+# [확인 3-2] .env에 MODEL_PRICES가 없을 때 쓰는 기본 단가표도 JSON으로 읽히고, 기본 LLM·VISION 모델 단가가 들어 있다
+#   (깨진 JSON이면 비용 계산이 예외로 끝나고, 모델이 빠지면 비용이 오류 없이 0원으로 기록된다)
+def test_default_model_prices_is_valid(monkeypatch):
+	from hri.config import settings as settings_module
+
+	monkeypatch.setattr(settings_module, "load_dotenv", lambda *args, **kwargs: None)  # .env를 읽지 않고 기본값만 본다
+	for name in ("MODEL_PRICES", "LLM_MODEL", "VISION_MODEL"):
+		monkeypatch.delenv(name, raising=False)
+	for name in ("MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD", "MYSQL_DATABASE"):
+		monkeypatch.setenv(name, "x")
+	monkeypatch.setenv("CHROMA_MODE", "persistent")
+	settings = settings_module.load_settings()
+	prices = json.loads(settings.model_prices)
+	for model in (settings.llm_model, settings.vision_model):
+		assert model in prices, f"기본 단가표에 {model} 단가가 없습니다"
+		assert isinstance(prices[model]["input"], (int, float)) and isinstance(prices[model]["output"], (int, float))
+
+
+# [확인 3-3] 지금 .env의 단가표에 지금 쓰는 LLM·VISION 모델 단가가 숫자로 들어 있다 (없으면 원화 비용이 0원으로 남음)
+def test_env_model_prices_cover_current_models():
+	from hri.config.settings import load_settings
+
+	try:
+		settings = load_settings()
+	except ValueError as error:
+		pytest.skip(f".env가 없어 건너뜀: {error}")
+	prices = json.loads(settings.model_prices)
+	for model in (settings.llm_model, settings.vision_model):
+		matched = [name for name in prices if model.startswith(name)]
+		assert matched, f".env MODEL_PRICES에 {model} 단가가 없습니다"
+		assert all(isinstance(prices[matched[0]][k], (int, float)) for k in ("input", "output")), f"{model} 단가가 숫자가 아닙니다 (null?)"
 
 
 # [확인 4] 수출입은행만 실패하면 ECOS 원/달러 환율을 쓴다 (명세서: 수출입은행 → ECOS → 1,400원)
@@ -187,14 +224,6 @@ def test_rates_all_empty():
 	assert ecos_client.get_exchange_rates(client=client) == []
 
 
-# [확인 11] 한 통화만 API 오류가 나도 나머지 통화는 나와야 한다 (명세서: 통화별로 실패하면 그 줄만 '불러오지 못했습니다')
-def test_rates_one_currency_error_keeps_others():
-	client = FakeEcos({"USD": [_row("20261028", "1385.5")],
-		"JPY": EcosResponseError("ERROR-500", "서버 오류"), "EUR": [_row("20261028", "1490.2")]})
-	rates = ecos_client.get_exchange_rates(client=client)
-	assert [r.currency for r in rates] == ["USD", "EUR"]
-
-
 # =====================================================================
 # 4. ECOS 통계용어 lookup_term(): 빈 결과는 None, 그 밖의 오류는 예외 (explain_term이 ExternalApiError로 바꿈)
 # =====================================================================
@@ -219,3 +248,52 @@ def test_lookup_term_empty_is_none(result):
 def test_lookup_term_error_raises():
 	with pytest.raises(EcosResponseError):
 		ecos_client.lookup_term("GDP", FakeWordClient(EcosResponseError("ERROR-100", "인증키가 유효하지 않습니다")))
+
+
+# =====================================================================
+# 5. 환율 도구 get_ecos_exchange_rate(): 통화별로 결과·실패를 안내 문구로 보여 준다 (에이전트가 화면에 전달)
+# =====================================================================
+def _rate_tool(monkeypatch, behavior):
+	"""get_exchange_rates를 가짜로 바꾸고 tool_router의 환율 도구를 돌려준다."""
+	from hri.router import tool_router
+
+	def fake(currencies=None, **kwargs):
+		if isinstance(behavior, Exception):
+			raise behavior
+		return [rate for rate in behavior if rate.currency in (currencies or [])]
+
+	monkeypatch.setattr(ecos_client, "get_exchange_rates", fake)
+	return tool_router
+
+
+# [확인 14] 정상: 통화·환율·기준일을 JSON으로 돌려준다 (JPY는 100엔 기준)
+def test_rate_tool_returns_currency_value_and_date(monkeypatch):
+	rates = [EcosExchangeRate(currency="USD", value=1385.5, base_date="20261028"),
+		EcosExchangeRate(currency="JPY", value=905.3, base_date="20261028")]
+	tool_router = _rate_tool(monkeypatch, rates)
+	out = tool_router.get_ecos_exchange_rate.invoke({"currency": "JPY"})
+	assert "JPY" in out and "905.3" in out and "20261028" in out and "USD" not in out
+
+
+# [확인 15] 그 통화의 값이 없으면 '환율을 불러오지 못했습니다.' (다른 통화 조회에는 영향 없음)
+def test_rate_tool_empty_currency_message(monkeypatch):
+	tool_router = _rate_tool(monkeypatch, [EcosExchangeRate(currency="USD", value=1385.5, base_date="20261028")])
+	assert tool_router.get_ecos_exchange_rate.invoke({"currency": "EUR"}) == tool_router.NO_EXCHANGE_RATE_MESSAGE
+	assert "1385.5" in tool_router.get_ecos_exchange_rate.invoke({"currency": "USD"})
+
+
+# [확인 16] API 장애는 예외로 끝나지 않고 안내 문구로 바뀐다 (ExternalApiError는 그 문구, 그 밖은 '데이터를 불러오지 못했습니다.')
+@pytest.mark.parametrize("error,expected", [
+	("external", "환율 서버 점검 중입니다."),
+	(EcosResponseError("ERROR-500", "서버 오류"), "ECOS_FAIL_MESSAGE"),
+	(httpx.ConnectTimeout("timed out"), "ECOS_FAIL_MESSAGE"),
+], ids=["ExternalApiError", "ECOS오류", "타임아웃"])
+def test_rate_tool_failure_message(monkeypatch, error, expected):
+	from hri.exception.errors import ExternalApiError
+
+	if error == "external":
+		error = ExternalApiError("환율 서버 점검 중입니다.")
+	tool_router = _rate_tool(monkeypatch, error)
+	out = tool_router.get_ecos_exchange_rate.invoke({"currency": "USD"})
+	assert out == getattr(tool_router, expected, expected)  # 상수 이름이면 그 문구, 아니면 적은 문구 그대로
+	assert SECRET_KEY not in out

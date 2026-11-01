@@ -1,4 +1,4 @@
-"""4.1.2 정답 질문 30문항 정확도·출처 일치율 평가 스크립트 (서동안)
+"""4.1.1 정답 질문 30문항 정확도·출처 일치율 평가 스크립트 (서동안)
 
 정답셋(tests/fixtures/qa_answers.json)의 질문을 하나씩 실행해 결과를 CSV로 저장하고, 요약 지표를 출력한다.
 qa_graph 노드(validate·rewrite·retrieve·grade·sources)가 아직 연결 전이라 그래프를 거치지 않고,
@@ -43,7 +43,8 @@ C_MS, C_TOKENS, C_COST = "응답시간(ms)", "토큰", "비용(원)"
 C_ACC, C_SRC_OK, C_REASON, C_MEMO = "정확도 점수", "출처 일치", "실패 원인", "메모"
 RESULT_COLUMNS = [C_ID, C_REPORTS, C_TYPE, C_QUESTION, C_KEY, C_PAGES, C_ROUTE, C_HAS, C_SCORE, C_ANSWER,
 	C_SRC, C_MS, C_TOKENS, C_COST, C_ACC, C_SRC_OK, C_REASON, C_MEMO]
-PERSONA_COLUMNS = ["번호", "질문", "페르소나", "기대 특징", "답변", "말투(O/X)", "용어 난이도(O/X)", "구성(O/X)", "수치·출처 정확(O/X)", "메모"]
+PERSONA_COLUMNS = ["번호", "질문", "페르소나", "기대 특징", "답변", "글자 수", "형식 자동 후보",
+	"말투(O/X)", "형식(O/X)", "용어 처리(O/X)", "수치·출처 정확(O/X)", "메모"]
 
 
 # ---------------------------------------------------------------------
@@ -96,7 +97,7 @@ def _text(content) -> str:
 
 
 def top_score(question: str, report_ids: list[int]) -> float | None:
-	"""원 질문의 의미 검색 1등 score (THRESHOLD 거르기 전). 4.1.3에서 기준값을 정할 때 쓴다."""
+	"""원 질문의 의미 검색 1등 score (THRESHOLD 거르기 전). 4.1.2에서 기준값을 정할 때 쓴다."""
 	from hri.retriever.search import vector_search
 	from hri.vector_store.embedding import embed_texts
 
@@ -209,7 +210,7 @@ def summarize(rows: list[dict], conditions: str = "") -> str:
 	tokens = [v for r in rows if (v := _num(r[C_TOKENS])) is not None]
 	costs = [v for r in rows if (v := _num(r[C_COST])) is not None]
 
-	lines = ["# 4.1.2 결과 요약", ""]
+	lines = ["# 4.1.1 결과 요약", ""]
 	if conditions:
 		lines += [conditions, ""]
 	lines += [
@@ -222,7 +223,7 @@ def summarize(rows: list[dict], conditions: str = "") -> str:
 		f"| 근거없음 오판 (route = no_answer) | {sum(r[C_ROUTE] == 'no_answer' for r in rows)} |",
 		f"| 실행 오류 (route = error) | {sum(r[C_ROUTE] == 'error' for r in rows)} |",
 		f"| 평균 1등 score | {sum(scores) / len(scores):.3f} |" if scores else "| 평균 1등 score | - |",
-		f"| 최저 1등 score (4.1.3 기준값) | {min(scores):.3f} |" if scores else "| 최저 1등 score (4.1.3 기준값) | - |",
+		f"| 최저 1등 score (4.1.2 기준값) | {min(scores):.3f} |" if scores else "| 최저 1등 score (4.1.2 기준값) | - |",
 		f"| 평균 응답시간 (ms) | {sum(ms) / len(ms):,.0f} |" if ms else "| 평균 응답시간 (ms) | - |",
 		f"| 총 토큰 | {sum(tokens):,.0f} |",
 		f"| 총 비용 (원) | {sum(costs):,.2f} |",
@@ -305,22 +306,54 @@ def run_accuracy(data: dict, ids: dict[str, int], only: set[str] | None, persona
 	return rows
 
 
+_TERM_EXPLAIN_RE = re.compile(r"\(([^()]*[가-힣]{2}[^()]*)\)")  # '용어(쉬운 풀이)'의 괄호 풀이 (출처 괄호는 따로 뺌)
+
+
+def persona_format_check(persona: str, answer: str, practitioner_len: int | None) -> str:
+	"""페르소나별 답변 형식 자동 후보 (persona_prompt.ANSWER_FORMATS 기준). 최종 판정은 사람이 한다.
+
+	입문자: 괄호 용어 풀이가 1개 이상이고 모형·통계 용어(VAR·모형)가 없으면 O
+	실무자: '결론:' / '근거:' / '시사점:'으로 시작하는 줄이 모두 있으면 O
+	전문가: '결론:' 세 줄 형식이 아니고, 같은 질문의 실무자 답변보다 1.3배 이상 길면 O
+	"""
+	text = (answer or "").strip()
+	if not text or text.startswith("자료에 없습니다"):
+		return "-"
+	if persona == "입문자":
+		explains = [m for m in _TERM_EXPLAIN_RE.findall(text) if not m.startswith("출처")]
+		return "O" if explains and not re.search(r"VAR|모형", text) else "X"
+	if persona == "실무자":
+		heads = [line.split(":")[0].strip() for line in text.splitlines() if ":" in line]
+		return "O" if all(h in heads for h in ("결론", "근거", "시사점")) else "X"
+	if persona == "전문가":
+		deeper = practitioner_len is None or len(text) >= practitioner_len * 1.3
+		return "O" if not text.startswith("결론:") and deeper else "X"
+	return "-"
+
+
 def run_personas(data: dict, ids: dict[str, int], k: int, use_mmr: bool) -> list[dict]:
-	"""같은 질문을 세 페르소나로 돌려 답변을 모은다. 말투·용어·구성은 사람이 O/X로 적는다."""
+	"""같은 질문을 세 페르소나로 돌려 답변을 모은다. 형식은 자동 후보를 적고, 말투·용어·수치는 사람이 O/X로 적는다."""
 	compare = data["persona_compare"]
 	by_id = {i["id"]: i for i in data["items"]}
 	rows = []
 	for qid in compare["question_ids"]:
 		item = by_id[qid]
 		report_ids = [ids[c] for c in item["reports"]]
+		group = []
 		for persona in compare["personas"]:
 			row = {"번호": qid, "질문": item["question"], "페르소나": persona, "기대 특징": compare["expect"][persona]}
 			try:
 				row["답변"] = run_question(item["question"], report_ids, persona, k, use_mmr)["answer"]
 			except Exception as error:
+				row["답변"] = ""
 				row["메모"] = f"실행 오류: {type(error).__name__}: {error}"
-			rows.append(row)
+			row["글자 수"] = len(row["답변"])
+			group.append(row)
 			print(f"[페르소나] {qid} {persona} 완료")
+		practitioner_len = next((r["글자 수"] for r in group if r["페르소나"] == "실무자" and r["글자 수"]), None)
+		for row in group:
+			row["형식 자동 후보"] = persona_format_check(row["페르소나"], row["답변"], practitioner_len)
+		rows.extend(group)
 	return rows
 
 
@@ -339,7 +372,7 @@ def read_csv(path: Path) -> list[dict]:
 
 
 def main() -> None:
-	parser = argparse.ArgumentParser(description="4.1.2 정답 질문 정확도·출처 일치율 평가")
+	parser = argparse.ArgumentParser(description="4.1.1 정답 질문 정확도·출처 일치율 평가")
 	parser.add_argument("--answers", type=Path, default=DEFAULT_ANSWERS, help="정답셋 JSON (기본: tests/fixtures/qa_answers.json)")
 	parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="결과 저장 폴더 (기본: logs/eval_qa)")
 	parser.add_argument("--persona", default="실무자")

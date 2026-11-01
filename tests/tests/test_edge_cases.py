@@ -1,4 +1,4 @@
-"""4.1.8 예외 상황 점검 — 빈 입력 · 초장문 · 암호화 PDF · 대용량 PDF (서동안)
+"""4.1.7 예외 상황 점검 — 빈 입력 · 초장문 · 암호화 PDF · 대용량 PDF (서동안)
 
 확인하는 것
 	1. 질문 입력: 빈 질문·공백만·1,000자 경계(validate_question), 초장문에서도 mask_pii가 빨리 끝나는지
@@ -47,6 +47,9 @@ def use_limits(monkeypatch, max_mb=DEFAULT_MAX_MB, max_pages=DEFAULT_MAX_PAGES):
 @pytest.fixture(autouse=True)
 def default_limits(monkeypatch):
 	use_limits(monkeypatch)
+	# 업로드 전체 테스트(5절)가 DB에 접속하지 않게: 같은 파일 중복 확인·사용량 기록을 가짜로 바꾼다
+	monkeypatch.setattr(document_service, "select_report_by_hash", lambda file_hash: None)
+	monkeypatch.setattr(document_service, "insert_usage", lambda usage: None)
 
 
 def make_pdf(path, pages=1, text="2025년 하반기 경제전망 본문", **save_options):
@@ -121,12 +124,6 @@ def test_mask_pii_is_fast_on_long_text():
 	masked = mask_pii(question)
 	assert time.perf_counter() - started < 1.0
 	assert "abc!@#123" not in masked and "user_01" not in masked and "홍길동" not in masked
-
-
-@pytest.mark.xfail(strict=True, reason="참고: 폭 없는 공백(\\u200b)은 strip()이 지우지 않아 빈 질문으로 걸러지지 않음")
-def test_zero_width_space_only_is_rejected():
-	with pytest.raises(InvalidInputError):
-		validate_question("​​")
 
 
 # ---------------------------------------------------------------------

@@ -1,19 +1,19 @@
-"""4.1.5 요약 품질·JSON 형식 점검 스크립트 (서동안)
+"""4.1.4 요약 품질·JSON 형식 점검 스크립트 (서동안)
 
 보고서 PDF를 업로드와 같은 방식(load_pdf → clean_text → find_body_start → split_sections)으로 섹션으로 나눈 뒤,
 summarize_sections()·summarize_three_lines()를 실제 LLM으로 실행해 품질과 형식을 자동 점검한다.
 DB·Chroma 없이 PDF만 있으면 된다 (--report-id를 주면 DB의 섹션을 쓴다).
 
-자동 점검 (prompt_design.md 11장 4.1.5)
+자동 점검 (prompt_design.md 11장)
 	① 3줄: 정확히 3줄 / 각 줄 60자 이내 / 줄 앞 번호·기호 없음 / 2줄(근거 수치)에 숫자가 있음
 	② 3줄의 숫자가 모두 섹션 요약에 있음 (없으면 지어낸 수치 후보)
 	③ 섹션 요약: 2~3문장 / 제목·페이지 범위가 원래 섹션과 같음 / 요약의 숫자가 모두 섹션 원문에 있음
 	③-2 reasoning이 주장 → 수치 → 시사점 순서인지는 사람이 본다 (CSV에 reasoning을 함께 저장)
 	④ 형식 재시도: 섹션·3줄마다 LLM 호출 횟수를 센다 (1번 = 한 번에 통과, 2번 = 재시도, 실패 = OutputFormatError)
+	⑥ 병합(--merge): 결론 있음·3문장 이내 / 공통·차이 / 공통 의견 출처 표시 / 요약에 없는 숫자 없음, 시간·토큰·비용
 
-이 스크립트가 다루지 않는 4.1.5 항목
-	- 형식을 일부러 어겼을 때 재시도·OutputFormatError: 기존 tests/test_summary_prompt.py로 확인
-	- 병합(merge_reports): 아직 구현 전
+이 스크립트가 다루지 않는 4.1.4 항목
+	- 형식을 일부러 어겼을 때 재시도·OutputFormatError, 요약·병합 화면 문구: tests/test_summary_format.py (LLM 없이)
 	- 요약 캐시 로직(저장 → 읽기 왕복, 깨진 캐시 다시 만들기): tests/test_summary_cache.py (DB·LLM 없이)
 
 요약 캐시 실제 확인(--cache-check, ⑤)
@@ -26,6 +26,7 @@ DB·Chroma 없이 PDF만 있으면 된다 (--report-id를 주면 DB의 섹션을
 	poetry run python -m tests.eval_summary --pdf data/raw/환율.pdf --sections-only    # 섹션 나누기만 확인 (API 없음)
 	poetry run python -m tests.eval_summary --report-id 3                              # DB에 저장된 섹션 사용
 	poetry run python -m tests.eval_summary --cache-check 3                            # 요약 캐시 실제 확인 (DB 필요)
+	poetry run python -m tests.eval_summary --merge 3,4 3,4,5                          # 병합 결과 점검 (DB 필요)
 
 결과는 logs/eval_summary/에 저장한다 (logs/는 .gitignore 대상).
 """
@@ -215,7 +216,7 @@ def summarize_results(section_rows: list[dict], three_rows: list[dict], conditio
 	sec_fail = [r for r in section_rows if str(r.get("판정(자동)", "")).startswith("형식 실패")]
 	three_ok = [r for r in three_rows if r.get("판정(자동)") == "통과"]
 
-	lines = ["# 4.1.5 요약 품질·JSON 형식 점검 결과", "", conditions, "",
+	lines = ["# 4.1.4 요약 품질·JSON 형식 점검 결과", "", conditions, "",
 		"## 섹션 요약", "", "| 항목 | 결과 |", "|---|---|",
 		f"| 섹션 수 | {len(section_rows)} |",
 		f"| 자동 점검 통과 | {len(sec_ok)}/{len(section_rows)} |",
@@ -266,18 +267,78 @@ def cache_check(report_id: int) -> dict:
 	}
 
 
+def merge_check(report_ids: list[int]) -> dict:
+	"""merge_reports()를 실제로 실행해 병합 결과 형식·내용을 점검한다 (요약은 캐시가 있으면 재사용).
+
+	자동 점검: 결론이 있음 / 결론 3문장 이내 / 공통 또는 차이가 있음 / 공통 의견에 보고서 출처 표시 /
+	병합 결과의 숫자가 모두 보고서들의 섹션 요약에 있음(없으면 지어낸 수치 후보)
+	"""
+	import time
+
+	from langchain_core.callbacks import get_usage_metadata_callback
+
+	from hri.llm.llm_client import cost_korean_won, get_usd_krw
+	from hri.prompt.summary_prompt import merge_reports
+	from hri.service.summary_service import summarize_report
+
+	started = time.perf_counter()
+	with get_usage_metadata_callback() as usage_cb:
+		summaries = [summarize_report(i) for i in report_ids]
+		merged = merge_reports(report_ids)
+	usage = dict(usage_cb.usage_metadata)
+	source_numbers = set()
+	for summary in summaries:
+		for section in summary.sections:
+			source_numbers |= numbers(section.summary)
+		for line in summary.three_lines:
+			source_numbers |= numbers(line)
+	result_text = " ".join(merged.common + merged.differences + [merged.conclusion])
+	invented = sorted(numbers(result_text) - source_numbers)
+	checks = {
+		"결론 있음": bool(merged.conclusion.strip()),
+		"결론 3문장 이내": sentence_count(merged.conclusion) <= 3,
+		"공통·차이 중 하나 이상": bool(merged.common or merged.differences),
+		"공통 의견에 출처 표시": all("(" in item for item in merged.common) if merged.common else True,
+		"요약에 없는 숫자 없음": not invented,
+	}
+	return {
+		"report_ids": ",".join(map(str, report_ids)), "공통 수": len(merged.common), "차이 수": len(merged.differences),
+		**{k: "O" if v else "X" for k, v in checks.items()},
+		"요약에 없는 숫자": ", ".join(invented), "시간(초)": round(time.perf_counter() - started, 2),
+		"토큰": sum(u.get("total_tokens", 0) for u in usage.values()),
+		"비용(원)": round(cost_korean_won(usage, get_usd_krw()), 2) if usage else 0.0,
+		"판정(자동)": "통과" if all(checks.values()) else "확인 필요",
+		"결론": merged.conclusion, "공통": " / ".join(merged.common), "차이": " / ".join(merged.differences),
+	}
+
+
 def targets_given(args) -> bool:
 	return bool(args.pdf or args.report_id)
 
 
 def main() -> None:
-	parser = argparse.ArgumentParser(description="4.1.5 요약 품질·JSON 형식 점검")
+	parser = argparse.ArgumentParser(description="4.1.4 요약 품질·JSON 형식 점검")
 	parser.add_argument("--pdf", type=Path, nargs="*", default=[], help="점검할 보고서 PDF (여러 개 가능)")
 	parser.add_argument("--report-id", type=int, nargs="*", default=[], help="DB에 저장된 보고서의 섹션을 쓸 때")
 	parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
 	parser.add_argument("--sections-only", action="store_true", help="섹션 나누기 결과만 출력 (API 호출 없음)")
 	parser.add_argument("--cache-check", type=int, nargs="*", default=[], help="요약 캐시 실제 확인할 report_id (DB 필요)")
+	parser.add_argument("--merge", nargs="*", default=[], help="병합 점검할 보고서 묶음. 예) --merge 3,4 3,4,5 (DB 필요)")
 	args = parser.parse_args()
+
+	if args.merge:
+		rows = []
+		for group in args.merge:
+			ids = [int(x) for x in group.split(",")]
+			row = merge_check(ids)
+			rows.append(row)
+			print({k: v for k, v in row.items() if k not in ("결론", "공통", "차이")})
+		columns = list(rows[0])
+		stamp = datetime.now().strftime("%Y%m%d_%H%M")
+		write_csv(args.out_dir / f"summary_merge_{stamp}.csv", columns, rows)
+		print(f"저장: {args.out_dir / f'summary_merge_{stamp}.csv'}")
+		if not (targets_given(args) or args.cache_check):
+			return
 
 	if args.cache_check:
 		rows = []
@@ -285,7 +346,7 @@ def main() -> None:
 			row = cache_check(report_id)
 			rows.append(row)
 			print(row)
-		lines = ["# 4.1.5 요약 캐시 확인 (⑤)", "", "| report_id | 처음부터 캐시 | 1회 토큰·시간 | 2회 토큰·시간 | 결과 같음 | 판정 |",
+		lines = ["# 4.1.4 요약 캐시 확인 (⑤)", "", "| report_id | 처음부터 캐시 | 1회 토큰·시간 | 2회 토큰·시간 | 결과 같음 | 판정 |",
 			"|---|---|---|---|---|---|"]
 		for r in rows:
 			lines.append(f"| {r['report_id']} | {'있음' if r['처음부터 캐시 있음'] else '없음'} | "
