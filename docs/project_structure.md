@@ -36,7 +36,6 @@
 | `prompt` | 프롬프트 구성 | `rag_prompt`, `summary_prompt`, `persona_prompt` |
 | `memory` | 대화 기록 줄이기·질문 다시 쓰기 | `history_store` |
 | `source` | 출처 정리 | `source_formatter` |
-| `suggest` | 추천 질문·용어 추출 | `suggest_service` |
 | `router` | Tool Calling 도구 목록·에이전트 실행 | `tool_router` |
 | `llm` | LLM 모델 생성·호출·비용 계산 | `llm_client` |
 | `api` | 외부 API (ECOS·수출입은행·국립국어원) | `ecos_client`, `exchange_client`, `stdict_client`, `ecos_finder` |
@@ -108,8 +107,6 @@ highlight-refresh-integrate/
 │  │  └─ history_store.py                  # trim_history(), rewrite_question()
 │  ├─ source/
 │  │  └─ source_formatter.py               # format_sources()
-│  ├─ suggest/
-│  │  └─ suggest_service.py                # suggest_questions()
 │  ├─ router/
 │  │  └─ tool_router.py                    # TOOLS, run_agent_with_tools()
 │  ├─ llm/
@@ -229,11 +226,11 @@ highlight-refresh-integrate/
 
 | 담당 | 모듈 (`hri/` 생략) |
 |---|---|
-| 류현수 | `api/exchange_client`, `api/stdict_client`, `service/term_service`, `dao/term_dao`, `view/term_view`, `view/indicator_view.build_indicator_panel`, `view/chat_view.on_suggest_click`·`on_term_click`, `suggest/suggest_service`, `tests/sample_pdf`(삭제 예정) |
+| 류현수 | `api/exchange_client`, `api/stdict_client`, `api/ecos_finder`, `service/term_service`, `dao/term_dao`, `view/term_view`, `view/indicator_view.build_indicator_panel`, `view/chat_view.on_suggest_click`·`on_term_click`·`on_feedback`, `dao/qa_log_dao.update_feedback`, `tests/sample_pdf`(삭제 예정) |
 | 서동안 | `service/qa_service.validate_question`·`mask_pii`, `prompt/persona_prompt`, `llm/llm_client.get_chat_model`·`ask_llm`·`chat_bot`, `domain/schemas/qa` |
 | 김희진 | `view/report_view.build_upload_tab`·`on_upload`, `view/summary_view`, `service/document_service.upload_report`, `service/summary_service`, `splitter/text_splitter`, `vector_store/*`, `dao/report_dao.insert_report`·`insert_sections`·`insert_chunks`·`select_sections`·`update_summary_json`·`get_context_docs`, `retriever/search.extract_keywords`·`keyword_find`, `prompt/summary_prompt`, `router/tool_router`, `domain/schemas/summary` |
-| 엄정현 | `loader/*`, `service/document_service.validate_pdf`, `dao/report_dao.insert_tables`, `api/ecos_client`, `api/ecos_finder`, `graph/*`, `domain/schemas/report`·`external`·`graph_state`, `tests/fakes`, `tests/test_graphs` |
-| 임세준 | `view/app`, `view/user_view`, `view/history_view`, `view/admin_view`, `view/chat_view.on_feedback`, `service/user_service`, `service/history_service`, `dao/user_dao`, `dao/qa_log_dao`, `dao/dashboard_dao`, `dao/usage_dao`, `config/settings`, `llm/llm_client.cost_korean_won`·`get_usd_krw`, `util/*`, `domain/schemas/user`·`dashboard`·`settings` |
+| 엄정현 | `loader/*`, `service/document_service.validate_pdf`, `dao/report_dao.insert_tables`, `api/ecos_client`, `graph/*`, `domain/schemas/report`·`external`·`graph_state`, `tests/fakes`, `tests/test_graphs` |
+| 임세준 | `view/app`, `view/user_view`, `view/history_view`, `view/admin_view`, `service/user_service`, `service/history_service`, `dao/user_dao`, `dao/qa_log_dao`, `dao/dashboard_dao`, `dao/usage_dao`, `config/settings`, `llm/llm_client.cost_korean_won`·`get_usd_krw`, `util/*`, `domain/schemas/user`·`dashboard`·`settings` |
 | 장유빈 | `view/chat_view.build_chat_tab`·`respond_stream`, `view/report_view.build_report_list_panel`, `view/indicator_view.on_compare`, `service/qa_service.ask_stream`, `service/report_service`, `service/indicator_service`, `retriever/search.vector_search`·`safe_search`·`mmr_select`·`expand_queries`·`hybrid_search`, `prompt/rag_prompt`, `memory/history_store`, `source/source_formatter`, `dao/db`, `dao/report_dao.select_reports`, `dao/indicator_dao`, `sql/schema.sql` |
 | 각 영역 | `exception/errors`: `ChartExtractError`·`ExternalApiError`(엄정현), `InvalidInputError`(서동안), `OutputFormatError`(김희진), `LoginFailedError`·`DuplicateUserError`(임세준) |
 

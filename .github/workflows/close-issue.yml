@@ -1,0 +1,36 @@
+name: Close Issue on Develop Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - develop # develop 브랜치로 머지될 때 작동
+
+jobs:
+  close-issue:
+    if: github.event.pull_request.merged == true # PR이 '머지' 완료된 경우만
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Close linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || "";
+            // 본문에서 'closes #12' 또는 'fix #12' 같은 패턴 추출 (대소문자 무시)
+            const regex = /(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\s+#(\d+)/gi;
+            let match;
+            
+            while ((match = regex.exec(prBody)) !== null) {
+              const issueNumber = parseInt(match[1], 10);
+              console.log(`Closing issue #${issueNumber}`);
+              
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed'
+              });
+            }
