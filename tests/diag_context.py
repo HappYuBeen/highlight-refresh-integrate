@@ -12,7 +12,8 @@ LLM에 넘어간 [자료]에 정답 키워드가 들어 있었는지 확인한�
 	poetry run python -m tests.diag_context                       # 30문항
 	poetry run python -m tests.diag_context --only Q02,Q24,Q25    # 일부만
 	poetry run python -m tests.diag_context --show-context Q24    # 그 문항의 [자료] 전체도 리포트에 넣기
-결과: logs/eval_qa/diag_context_<시각>.md
+	poetry run python -m tests.diag_context --only Q13 --k 3 --mmr-lambda 0.7   # MMR 켜고 λ 지정 (.env는 그대로)
+결과: logs/eval_qa/diag_context_k<k>_<off|mmrλ>_<시각>.md (설정이 다르면 같은 분에 돌려도 덮어쓰지 않음)
 """
 
 import argparse
@@ -99,12 +100,21 @@ def main() -> None:
 	parser.add_argument("--report-ids", help="예) FX=3,PR=4,GR=5")
 	parser.add_argument("--k", type=int, default=4)
 	parser.add_argument("--mmr", action="store_true")
+	parser.add_argument("--mmr-lambda", type=float, help="MMR 관련도 비중 λ (주면 MMR을 켜고 .env MMR_LAMBDA 대신 이 값을 씀)")
 	parser.add_argument("--show-context", default="", help="[자료] 전문을 리포트에 넣을 문항 번호 (쉼표 구분)")
 	args = parser.parse_args()
 
 	from hri.config.settings import load_settings
 
 	settings = load_settings()
+	if args.mmr_lambda is not None:
+		# hybrid_search가 읽는 load_settings()만 이 실행 동안 λ를 바꿔 돌려준다 (.env는 그대로)
+		import hri.retriever.search as search
+
+		patched = settings.model_copy(update={"mmr_lambda": args.mmr_lambda})
+		search.load_settings = lambda: patched
+		args.mmr = True
+	lam_text = f"{patched.mmr_lambda:.2f}" if args.mmr_lambda is not None else f"{settings.mmr_lambda:.2f}"
 	limit = settings.max_context_chars
 	data = load_answers(DEFAULT_ANSWERS)
 	ids = resolve_report_ids(data, args.report_ids)
@@ -122,7 +132,7 @@ def main() -> None:
 	for r in results:
 		causes.setdefault(r["cause"], []).append(r["id"])
 	lines = ["# 근거 문맥 진단", "",
-		f"실행일 {datetime.now():%Y-%m-%d %H:%M} · k={args.k} · use_mmr={args.mmr} · THRESHOLD={settings.threshold} · "
+		f"실행일 {datetime.now():%Y-%m-%d %H:%M} · k={args.k} · use_mmr={args.mmr}" + (f" (λ={lam_text})" if args.mmr else "") + f" · THRESHOLD={settings.threshold} · "
 		f"MAX_CONTEXT_CHARS={limit} · report_id={ids}", "",
 		"## 0. 진단 방식", "",
 		"답변과 같은 방식으로 검색해 LLM에 넘어가는 [자료]를 만들고, 정답셋의 채점 키워드가 그 안에 있는지 본다 (LLM은 부르지 않음).",
@@ -138,7 +148,8 @@ def main() -> None:
 		lines += table(["채점 키워드", "판정", "위치"], r["kw_rows"])
 		if r["id"] in show:
 			lines += details("[자료] 전문 (펼치기)", ["```text", r["used_text"], "```"])
-	path = write_report(OUT_DIR / f"diag_context_{datetime.now():%Y%m%d_%H%M}.md", lines)
+	mmr_tag = f"_mmr{lam_text}" if args.mmr else "_off"
+	path = write_report(OUT_DIR / f"diag_context_k{args.k}{mmr_tag}_{datetime.now():%Y%m%d_%H%M}.md", lines)
 	print(f"\n리포트 저장: {path}")
 
 

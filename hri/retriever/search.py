@@ -185,7 +185,7 @@ def hybrid_search(
 	"""키워드 검색과 의미 검색을 RRF로 합쳐 질문에 맞는 청크 k개를 돌려준다.
 
 	원 질문과 expand_queries()의 확장 질문을 한 번에 임베딩해 질문마다 의미 검색을 하고,
-	use_mmr가 True면 후보 20개를 받아 mmr_select()로 k개로 줄인다. 의미 검색 결과가
+	use_mmr가 True면 후보 20개를 받아 mmr_select()로 k개로 줄인다 (관련도 비중 = .env MMR_LAMBDA). 의미 검색 결과가
 	전부 0건이면 키워드 결과가 있어도 빈 리스트(근거 없음)를 돌려준다.
 	병합은 (report_id, chunk_no)가 같은 청크를 하나로 보고 1/(60+순위)를 더한 점수로 한다.
 	"""
@@ -202,11 +202,12 @@ def hybrid_search(
 
 	# 3) 질문마다 의미 검색을 한다. MMR이면 후보를 넉넉히 받아 k개로 줄인다
 	fetch_k = MMR_FETCH_K if use_mmr else k
+	mmr_lambda = load_settings().mmr_lambda if use_mmr else None  # .env MMR_LAMBDA (기본 0.5)
 	semantic_lists = []
 	for query_vec in query_vecs:
 		hits = safe_search(query_vec, fetch_k, report_ids)
 		if use_mmr:
-			hits = mmr_select(query_vec, hits, k)
+			hits = mmr_select(query_vec, hits, k, mmr_lambda)
 		semantic_lists.append([hit.chunk for hit in hits])
 
 	# 4) 의미 검색 결과가 전부 없으면 보고서 밖 질문으로 보고 근거 없음 처리한다

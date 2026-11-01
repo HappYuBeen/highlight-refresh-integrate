@@ -30,6 +30,9 @@
 	poetry run python -m tests.eval_search_params --skip-grid --answer 500/50/4/off/0.30 800/100/6/on/0.35
 옵션
 	--sizes 300,500,800,1000  --overlaps 0,50,100  --ks 1-10  --mmr both|on|off  --thresholds 0.10:0.60:0.05
+	--mmr-lambdas 0.5,0.7,0.8,0.9  (MMR을 켠 설정의 관련도 비중 λ. 1 = MMR 끈 것과 같음)
+	설정 표기: CHUNK_SIZE/CHUNK_OVERLAP/k/MMR/THRESHOLD, MMR은 off 또는 on@λ (예: 500/50/4/on@0.70/0.30, 'on'만 쓰면 λ=.env MMR_LAMBDA)
+	예) λ만 비교: --sizes 500 --overlaps 50 --ks 3,4 --thresholds 0.30 --mmr-lambdas 0.5,0.6,0.7,0.8,0.9
 	--report-ids FX=3,PR=4,GR=5  --persona 실무자
 리포트 (마크다운)
 	search_grid_<시각>_리포트.md    : 지표 계산식 → 추천 설정을 고른 규칙 1~4의 단계별 개수 → 추천·현재 설정의 질문별
@@ -64,26 +67,33 @@ MAX_MISS_RATE = 0.10  # 근거 없음 오판율 상한
 HIT_TOLERANCE_QUESTIONS = 1  # 적중률 최고값과 몇 문항 차이까지 같은 수준으로 볼지
 ACCURACY_TOLERANCE = 0.05  # 2단계 정확도 차이 허용
 
-GRID_COLUMNS = ["설정", "CHUNK_SIZE", "CHUNK_OVERLAP", "텍스트 청크 수", "k", "MMR", "THRESHOLD",
-	"안 질문 수", "근거 쪽 적중", "근거 쪽 적중률", "1순위 적중률", "근거 없음 오판", "근거 없음 오판율",
+GRID_COLUMNS = ["설정", "CHUNK_SIZE", "CHUNK_OVERLAP", "텍스트 청크 수", "k", "MMR", "MMR_LAMBDA", "THRESHOLD",
+	"안 질문 수", "근거 쪽 적중", "근거 쪽 적중률", "1순위 적중률", "표로만 적중", "근거 없음 오판", "근거 없음 오판율",
 	"밖 질문 수", "밖 질문 차단", "밖 질문 차단율", "평균 근거 문서 수", "평균 컨텍스트 글자 수"]
 ANSWER_COLUMNS = ["설정", "번호", "질문", "route", "응답시간(ms)", "토큰", "비용(원)",
 	"정확도(자동 후보)", "출처 일치", "응답 출처 쪽", "답변"]
-ANSWER_SUMMARY_COLUMNS = ["설정", "CHUNK_SIZE", "CHUNK_OVERLAP", "k", "MMR", "THRESHOLD", "문항 수",
+ANSWER_SUMMARY_COLUMNS = ["설정", "CHUNK_SIZE", "CHUNK_OVERLAP", "k", "MMR", "MMR_LAMBDA", "THRESHOLD", "문항 수",
 	"정확도(자동 후보)", "출처 일치율", "근거 없음", "평균 응답시간(ms)", "P95 응답시간(ms)", "문항당 비용(원)", "총 비용(원)"]
 
 
 # =====================================================================
 # 1. 설정 표기
 # =====================================================================
-def config_name(size, overlap, k, mmr, threshold) -> str:
-	return f"{size}/{overlap}/{k}/{'on' if mmr else 'off'}/{threshold:.2f}"
+def config_name(size, overlap, k, mmr, threshold, lam=None) -> str:
+	"""MMR을 켠 설정은 λ까지 적는다: 500/50/4/on@0.70/0.30"""
+	mmr_text = "off" if not mmr else f"on@{(0.5 if lam is None else lam):.2f}"
+	return f"{size}/{overlap}/{k}/{mmr_text}/{threshold:.2f}"
 
 
-def parse_config(text: str) -> tuple[int, int, int, bool, float]:
-	"""'500/50/4/off/0.30' → (500, 50, 4, False, 0.3)"""
+def parse_config(text: str, default_lambda: float = 0.5) -> tuple[int, int, int, bool, float, float | None]:
+	"""'500/50/4/off/0.30' → (500, 50, 4, False, 0.3, None) / '500/50/4/on@0.7/0.30' → (…, True, 0.3, 0.7)
+
+	'on'만 쓰면 λ = default_lambda (.env MMR_LAMBDA)
+	"""
 	size, overlap, k, mmr, threshold = text.split("/")
-	return int(size), int(overlap), int(k), mmr.lower() in ("on", "1", "true", "mmr"), float(threshold)
+	mmr, _, lam = mmr.lower().partition("@")
+	on = mmr in ("on", "1", "true", "mmr")
+	return int(size), int(overlap), int(k), on, float(threshold), (float(lam) if lam else default_lambda) if on else None
 
 
 def parse_range(text: str) -> list[int]:
@@ -266,7 +276,7 @@ def patched_search(**replacements):
 # 5. 지표 계산
 # =====================================================================
 def context_docs(chunks: list, sections: dict, table_lengths: dict, max_chars) -> list[tuple]:
-	"""get_context_docs()와 같은 규칙으로 근거 문서를 만든다: (report_id, 시작 쪽, 끝 쪽, 글자 수). 같은 섹션·표는 1번만."""
+	"""get_context_docs()와 같은 규칙으로 근거 문서를 만든다: (report_id, 시작 쪽, 끝 쪽, 글자 수, 종류). 같은 섹션·표는 1번만."""
 	docs, seen = [], set()
 	for chunk in chunks:
 		if chunk.chunk_type == "text":
@@ -276,13 +286,13 @@ def context_docs(chunks: list, sections: dict, table_lengths: dict, max_chars) -
 				continue
 			seen.add(key)
 			length = len(section.text) if max_chars is None else min(len(section.text), max_chars)
-			docs.append((chunk.report_id, section.start_page, section.end_page, length))
+			docs.append((chunk.report_id, section.start_page, section.end_page, length, "text"))
 		else:
 			key = ("t", chunk.doc_id)
 			if chunk.doc_id not in table_lengths or key in seen:
 				continue
 			seen.add(key)
-			docs.append((chunk.report_id, chunk.page, chunk.page, table_lengths[chunk.doc_id] or 0))
+			docs.append((chunk.report_id, chunk.page, chunk.page, table_lengths[chunk.doc_id] or 0, chunk.chunk_type))
 	return docs
 
 
@@ -292,6 +302,16 @@ def gold_hit(docs: list[tuple], expected: dict[str, list[int]], id_of: dict[str,
 		any(doc[0] == id_of[code] and any(doc[1] <= p <= doc[2] for p in pages) for doc in docs)
 		for code, pages in expected.items()
 	)
+
+
+def table_only_hit(docs: list[tuple], expected: dict[str, list[int]], id_of: dict[str, int]) -> bool:
+	"""정답 쪽을 포함하는 근거 문서가 표·차트뿐인지 (본문 섹션이 하나도 없음).
+
+	k=3+MMR(λ 0.5)에서 본문 섹션이 빠지고 표만 남아 표를 잘못 읽은 오답(Q08·Q15·Q16)이 나와서 따로 센다.
+	"""
+	matched = [d for d in docs for code, pages in expected.items()
+		if d[0] == id_of[code] and any(d[1] <= p <= d[2] for p in pages)]
+	return bool(matched) and all(d[4] != "text" for d in matched)
 
 
 def first_hit(docs: list[tuple], expected: dict[str, list[int]], id_of: dict[str, int]) -> bool:
@@ -324,9 +344,12 @@ def run_grid(args, data, oos, id_of, report_data, emb_cache, expansions, setting
 
 	rows = []
 	configs = [(s, o) for s in args.sizes for o in args.overlaps if o < s]
-	mmr_options = {"both": [False, True], "on": [True], "off": [False]}[args.mmr]
+	# MMR 선택지: (끔, None) / (켬, λ) — λ마다 다른 설정으로 센다
+	mmr_options = ([(False, None)] if args.mmr in ("both", "off") else []) + \
+		([(True, lam) for lam in args.mmr_lambdas] if args.mmr in ("both", "on") else [])
 	total = len(configs) * len(args.ks) * len(mmr_options) * len(args.thresholds)
-	print(f"[1단계] 청크 설정 {len(configs)}개 × k {len(args.ks)}개 × MMR {len(mmr_options)}개 × THRESHOLD {len(args.thresholds)}개 = {total}개 조합")
+	print(f"[1단계] 청크 설정 {len(configs)}개 × k {len(args.ks)}개 × MMR {len(mmr_options)}개(끔·λ별) × "
+		f"THRESHOLD {len(args.thresholds)}개 = {total}개 조합")
 
 	for size, overlap in configs:
 		started = time.perf_counter()
@@ -357,9 +380,10 @@ def run_grid(args, data, oos, id_of, report_data, emb_cache, expansions, setting
 		def fake_vector_search(query_vec, k=4, report_ids=None):
 			return top[(id(query_vec), tuple(report_ids or ()))][:k]
 
+		current = {"lam": 0.5}  # hybrid_search가 load_settings().mmr_lambda로 읽는 값 (설정마다 바꿈)
 		for threshold in args.thresholds:
 			replacements = dict(
-				load_settings=lambda t=threshold: SimpleNamespace(threshold=t),
+				load_settings=lambda t=threshold: SimpleNamespace(threshold=t, mmr_lambda=current["lam"]),
 				vector_search=fake_vector_search,
 				keyword_find=index.keyword_find,
 				expand_queries=lambda q: expansions[q],
@@ -369,8 +393,9 @@ def run_grid(args, data, oos, id_of, report_data, emb_cache, expansions, setting
 			)
 			with patched_search(**replacements) as s:
 				for k in args.ks:
-					for mmr in mmr_options:
-						hits = first = miss = blocked = 0
+					for mmr, lam in mmr_options:
+						current["lam"] = lam if mmr else 0.5
+						hits = first = miss = blocked = table_only = 0
 						doc_counts, ctx_chars = [], []
 						for it, inside in questions:
 							rids = [id_of[c] for c in it["reports"]]
@@ -382,14 +407,16 @@ def run_grid(args, data, oos, id_of, report_data, emb_cache, expansions, setting
 								docs = context_docs(found, sections, report_data["table_lengths"], settings.max_context_chars)
 								hits += gold_hit(docs, it["pages"], id_of)
 								first += first_hit(docs, it["pages"], id_of)
+								table_only += table_only_hit(docs, it["pages"], id_of)
 								doc_counts.append(len(docs))
 								ctx_chars.append(sum(d[3] for d in docs))
 							else:
 								blocked += not found
 						n_in, n_out = len(in_items), len(out_items)
 						rows.append({
-							"설정": config_name(size, overlap, k, mmr, threshold), "CHUNK_SIZE": size, "CHUNK_OVERLAP": overlap,
-							"텍스트 청크 수": text_count, "k": k, "MMR": "on" if mmr else "off", "THRESHOLD": threshold,
+							"설정": config_name(size, overlap, k, mmr, threshold, lam), "CHUNK_SIZE": size, "CHUNK_OVERLAP": overlap,
+							"텍스트 청크 수": text_count, "k": k, "MMR": "on" if mmr else "off",
+							"MMR_LAMBDA": lam if mmr else "", "THRESHOLD": threshold, "표로만 적중": table_only,
 							"안 질문 수": n_in, "근거 쪽 적중": hits, "근거 쪽 적중률": round(hits / n_in, 4),
 							"1순위 적중률": round(first / n_in, 4), "근거 없음 오판": miss, "근거 없음 오판율": round(miss / n_in, 4),
 							"밖 질문 수": n_out, "밖 질문 차단": blocked, "밖 질문 차단율": round(blocked / n_out, 4) if n_out else 0,
@@ -423,13 +450,13 @@ def run_answers(args, data, id_of, report_data, emb_cache, settings, specs: list
 	code_of = {v: k for k, v in id_of.items()}
 	detail, summary = [], []
 	for spec in specs:
-		size, overlap, k, mmr, threshold = parse_config(spec)
-		name = config_name(size, overlap, k, mmr, threshold)
+		size, overlap, k, mmr, threshold, lam = parse_config(spec, settings.mmr_lambda)
+		name = config_name(size, overlap, k, mmr, threshold, lam)
 		chunks = build_chunks(report_data, size, overlap)
 		index = MemoryIndex(chunks, emb_cache.get([c.text for c in chunks], embed_texts))
 		print(f"[2단계] {name} 답변 {len(data['items'])}문항")
 		replacements = dict(
-			load_settings=lambda t=threshold: settings.model_copy(update={"threshold": t}),
+			load_settings=lambda t=threshold, la=lam: settings.model_copy(update={"threshold": t, "mmr_lambda": la if la is not None else settings.mmr_lambda}),
 			vector_search=index.vector_search,
 			keyword_find=index.keyword_find,
 		)
@@ -463,6 +490,7 @@ def run_answers(args, data, id_of, report_data, emb_cache, settings, specs: list
 		accs = [r["정확도(자동 후보)"] for r in rows if r["정확도(자동 후보)"] is not None]
 		srcs = [r["출처 일치"] for r in rows if r["출처 일치"] is not None]
 		summary.append({"설정": name, "CHUNK_SIZE": size, "CHUNK_OVERLAP": overlap, "k": k, "MMR": "on" if mmr else "off",
+			"MMR_LAMBDA": lam if mmr else "",
 			"THRESHOLD": threshold, "문항 수": len(rows),
 			"정확도(자동 후보)": round(statistics.mean(accs), 4) if accs else None,
 			"출처 일치율": round(statistics.mean(srcs), 4) if srcs else None,
@@ -498,8 +526,13 @@ def _pct(x) -> str:
 	return f"{x:.1%}" if isinstance(x, (int, float)) else "-"
 
 
+def _sort_key(r):
+	lam = r.get("MMR_LAMBDA")
+	return (r["CHUNK_SIZE"], r["CHUNK_OVERLAP"], r["k"], r["MMR"], lam if isinstance(lam, (int, float)) else -1, r["THRESHOLD"])
+
+
 def grid_markdown(rows: list[dict], ranked: list[dict], base: dict | None, report_data: dict, settings, conditions: str) -> list[str]:
-	cols = ["설정", "근거 쪽 적중률", "1순위 적중률", "근거 없음 오판율", "밖 질문 차단율", "평균 근거 문서 수", "평균 컨텍스트 글자 수"]
+	cols = ["설정", "근거 쪽 적중률", "1순위 적중률", "표로만 적중", "근거 없음 오판율", "밖 질문 차단율", "평균 근거 문서 수", "평균 컨텍스트 글자 수"]
 
 	def line(r):
 		return "| " + " | ".join(_pct(r[c]) if c.endswith(("율", "률")) else str(r[c]) for c in cols) + " |"
@@ -525,8 +558,14 @@ def grid_markdown(rows: list[dict], ranked: list[dict], base: dict | None, repor
 			sel = [r for r in rows if all(r[f] == base[f] for f in ("CHUNK_SIZE", "CHUNK_OVERLAP", "k", "MMR", "THRESHOLD") if f != field)]
 			if field == "CHUNK_SIZE":
 				sel = [r for r in rows if r["k"] == base["k"] and r["MMR"] == base["MMR"] and r["THRESHOLD"] == base["THRESHOLD"]]
-			return ["", f"## 현재 설정에서 {label}만 바꿨을 때", ""] + head + [line(r) for r in sorted(sel, key=lambda r: (r["CHUNK_SIZE"], r["CHUNK_OVERLAP"], r["k"], r["MMR"], r["THRESHOLD"]))]
-		lines += vary("k", "k") + vary("MMR", "MMR") + vary("THRESHOLD", "THRESHOLD") + vary("CHUNK_SIZE", "CHUNK_SIZE·CHUNK_OVERLAP")
+			return ["", f"## 현재 설정에서 {label}만 바꿨을 때", ""] + head + [line(r) for r in sorted(sel, key=_sort_key)]
+		lines += vary("k", "k") + vary("MMR", "MMR(끔·λ별)") + vary("THRESHOLD", "THRESHOLD") + vary("CHUNK_SIZE", "CHUNK_SIZE·CHUNK_OVERLAP")
+		# k 3·4에서 MMR 끔 대 λ별 (현재 CHUNK·THRESHOLD 고정)
+		for kk in [x for x in (3, 4) if any(r["k"] == x for r in rows)]:
+			sel = [r for r in rows if r["k"] == kk and r["CHUNK_SIZE"] == base["CHUNK_SIZE"]
+				and r["CHUNK_OVERLAP"] == base["CHUNK_OVERLAP"] and r["THRESHOLD"] == base["THRESHOLD"]]
+			if len(sel) > 1:
+				lines += ["", f"## k={kk}에서 MMR 끔 대 λ별", ""] + head + [line(r) for r in sorted(sel, key=_sort_key)]
 	return lines
 
 
@@ -537,6 +576,9 @@ METRIC_RULES = [
 	"- **근거 쪽 적중률** = 근거 문서 중 정답 쪽을 포함하는 문서가 있는 안 질문 수 / 안 질문 수 "
 	"(정답 보고서가 여럿이면 보고서마다 있어야 적중, eval_qa_accuracy의 출처 일치와 같은 기준)",
 	"- **1순위 적중률** = 첫 번째 근거 문서가 정답 쪽을 포함하는 안 질문 수 / 안 질문 수",
+	"- **표로만 적중** = 정답 쪽을 포함하는 근거가 표·차트뿐이고 본문 섹션은 없는 안 질문 수 — 낮을수록 좋음 "
+	"(표만 보고 다른 기간 값을 읽는 오답이 났던 경우. 적중률에는 안 보여서 따로 셈)",
+	"- **MMR λ** = 관련도 비중. 설정 이름의 on@0.70처럼 적는다. λ=1이면 MMR 끈 것과 같고, 낮을수록 서로 다른 근거를 고른다",
 	"- **근거 없음 오판율** = 검색 결과가 0개(THRESHOLD에 모두 걸림)인 안 질문 수 / 안 질문 수 — 낮을수록 좋음",
 	"- **밖 질문 차단율** = 검색 결과가 0개인 밖 질문 수 / 밖 질문 수 — 높을수록 좋음",
 	"- **평균 근거 문서 수·컨텍스트 글자 수** = get_context_docs() 규칙으로 만든 근거 문서(같은 섹션·표는 1번)의 개수·글자 수 평균 "
@@ -567,7 +609,9 @@ def recommend_steps(rows: list[dict], n_in: int) -> list[str]:
 
 
 def _docs_text(docs: list[tuple], code_of: dict[int, str]) -> str:
-	return ", ".join(f"{code_of.get(d[0], d[0])} p.{d[1]}-{d[2]}" for d in docs) or "(없음)"
+	"""'FX p.10-13, FX p.5-5(표)' — 표·차트 근거는 (표)·(차트)를 붙인다."""
+	kind = {"table": "(표)", "chart": "(차트)"}
+	return ", ".join(f"{code_of.get(d[0], d[0])} p.{d[1]}-{d[2]}{kind.get(d[4], '') if len(d) > 4 else ''}" for d in docs) or "(없음)"
 
 
 def question_details(spec: str, data, oos, id_of, report_data, emb_cache, expansions, settings) -> list[dict]:
@@ -579,7 +623,7 @@ def question_details(spec: str, data, oos, id_of, report_data, emb_cache, expans
 
 	from tests.eval_qa_accuracy import explain_source_match
 
-	size, overlap, k, mmr, threshold = parse_config(spec)
+	size, overlap, k, mmr, threshold, lam = parse_config(spec, getattr(settings, "mmr_lambda", 0.5))
 	code_of = {v: c for c, v in id_of.items()}
 	sections = {(s.report_id, s.section_no): s for secs in report_data["sections"].values() for s in secs}
 	chunks = build_chunks(report_data, size, overlap)
@@ -588,7 +632,7 @@ def question_details(spec: str, data, oos, id_of, report_data, emb_cache, expans
 	texts = list(dict.fromkeys(t for it, _ in questions for t in [it["question"], *expansions[it["question"]]]))
 	vecs = dict(zip(texts, emb_cache.get(texts, embed_texts)))
 	replacements = dict(
-		load_settings=lambda t=threshold: SimpleNamespace(threshold=t),
+		load_settings=lambda t=threshold: SimpleNamespace(threshold=t, mmr_lambda=lam if lam is not None else 0.5),
 		vector_search=index.vector_search,
 		keyword_find=index.keyword_find,
 		expand_queries=lambda q: expansions[q],
@@ -610,8 +654,11 @@ def question_details(spec: str, data, oos, id_of, report_data, emb_cache, expans
 				else:
 					_, _, calc = explain_source_match(it["pages"], [(code_of[d[0]], d[1], d[2]) for d in docs], "rag")
 					first = first_hit(docs, it["pages"], id_of)
+					only_table = table_only_hit(docs, it["pages"], id_of)
 					row.update({"기대": f"근거 찾음 · 정답 쪽 {expected}", "적중": mark(gold_hit(docs, it["pages"], id_of)),
-						"1순위": mark(first), "계산": calc.replace("**", "") + f" · 1순위 {_docs_text(docs[:1], code_of)} → {'포함' if first else '미포함'}"})
+						"1순위": mark(first), "표로만": only_table,
+						"계산": calc.replace("**", "") + f" · 1순위 {_docs_text(docs[:1], code_of)} → {'포함' if first else '미포함'}"
+							+ (" · ⚠️ 정답 쪽 근거가 표뿐 (본문 섹션 없음)" if only_table else "")})
 			else:
 				row.update({"기대": "근거 없음 (검색 결과 0개)", "적중": mark(not found), "1순위": "-",
 					"계산": "검색 결과 0개 → 차단" if not found else f"근거 문서 {len(docs)}개가 THRESHOLD를 넘음 → 차단 실패 (LLM 거절 규칙에 맡겨짐)"})
@@ -626,13 +673,16 @@ def details_markdown(title: str, spec: str, grid_row: dict | None, rows: list[di
 	first = sum(r["1순위"] == PASS for r in ins)
 	miss = sum("근거 없음 오판" in r["계산"] for r in ins)
 	block = sum(r["적중"] == PASS for r in outs)
+	only_table = sum(bool(r.get("표로만")) for r in ins)
 	lines = [f"## {title}: {spec}", "", "지표 계산:", "",
+		f"- 표로만 적중 = {only_table}문항 ({', '.join(r['번호'] for r in ins if r.get('표로만')) or '없음'})" if ins else "",
 		f"- 근거 쪽 적중률 = {hit} / {len(ins)} = **{hit / len(ins):.1%}**" if ins else "",
 		f"- 1순위 적중률 = {first} / {len(ins)} = **{first / len(ins):.1%}**" if ins else "",
 		f"- 근거 없음 오판율 = {miss} / {len(ins)} = **{miss / len(ins):.1%}**" if ins else "",
 		f"- 밖 질문 차단율 = {block} / {len(outs)} = **{block / len(outs):.1%}**" if outs else ""]
 	if grid_row:
-		same = (grid_row["근거 쪽 적중"] == hit and grid_row["근거 없음 오판"] == miss and grid_row["밖 질문 차단"] == block)
+		same = (grid_row["근거 쪽 적중"] == hit and grid_row["근거 없음 오판"] == miss and grid_row["밖 질문 차단"] == block
+			and grid_row.get("표로만 적중", only_table) == only_table)
 		lines.append(f"- 1단계 표 값과 대조: {mark(same)} {'같음' if same else '다름 — 검색을 다시 돌린 결과가 표와 달라 확인 필요'}")
 	headers = ["번호", "질문", "기대", "실제 근거 문서", "결과", "1순위", "계산"]
 	lines += ["", "### 보고서 안 질문", ""] + table(headers, [[r["번호"], r["질문"], r["기대"], r["근거 문서"], r["적중"], r["1순위"], r["계산"]] for r in ins])
@@ -683,6 +733,7 @@ def main() -> None:
 	parser.add_argument("--overlaps", default="0,50,100")
 	parser.add_argument("--ks", default="1-10")
 	parser.add_argument("--mmr", choices=["both", "on", "off"], default="both")
+	parser.add_argument("--mmr-lambdas", default="0.5", help="MMR을 켠 설정의 λ 목록. 예) 0.5,0.7,0.8,0.9")
 	parser.add_argument("--thresholds", default="0.10:0.60:0.05")
 	parser.add_argument("--answer-top", type=int, default=0, help="1단계 추천 상위 N개 + 현재 설정을 답변까지 실행")
 	parser.add_argument("--answer", nargs="*", default=[], help="답변까지 실행할 설정. 예) 500/50/4/off/0.30")
@@ -694,6 +745,7 @@ def main() -> None:
 	args.overlaps = parse_range(args.overlaps)
 	args.ks = parse_range(args.ks)
 	args.thresholds = parse_thresholds(args.thresholds)
+	args.mmr_lambdas = [float(x) for x in args.mmr_lambdas.split(",")]
 
 	from hri.config.settings import load_settings
 	from hri.retriever.search import expand_queries

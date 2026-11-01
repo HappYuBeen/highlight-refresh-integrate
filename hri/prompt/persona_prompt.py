@@ -104,7 +104,7 @@ _Q_PRICE_GOODS = _question(_CONTEXT_PRICE_GOODS, "2026년 하반기 상품 물�
 # ③ [자료]에 답이 없는 질문: 금리 '하락'은 나오지만 기준금리 수준은 없다 (비슷한 말이 있어도 지어내지 않는 습관)
 _Q_NO_ANSWER = _question(_CONTEXT_GROWTH_2025, "2025년 기준금리는 몇 %까지 내려갈 것으로 보나요?")
  
-# 근거 없음 답변. RULE_SYSTEM_PROMPT 2번·qa_graph.NO_ANSWER_TEXT와 같은 문구여야 한다
+# 근거 없음 답변. RULE_SYSTEM_PROMPT 4번·qa_graph.NO_ANSWER_TEXT와 같은 문구여야 한다
 NO_ANSWER_TEXT = "자료에 없습니다."
  
 _SOURCE_EXCHANGE_RATE = "(출처: 물가, 환율 상승의 누적 효과에 주의해야 한다! p.5)"
