@@ -22,8 +22,12 @@ from hri.view.history_view import history_components, on_load_history, on_restor
 from hri.view.admin_view import build_admin_tab, admin_components, on_refresh, on_admin_upload, ADMIN_SCROLLBAR_STYLE
 
 # 화면 전체 테마 (UI 레퍼런스: 옅은 회색 배경·파란 강조색·둥근 모서리, CSS 없이 Gradio 테마 옵션만 사용)
+LOGO_GREEN = gr.themes.Color(c50="#effaf1",  c100="#d8f3dc", c200="#b2e6ba", 
+                             c300="#82d393", c400="#4dba67", c500="#27a049", 
+							 c600="#1a8a3c", c700="#16702f", c800="#145a29", 
+							 c900="#114a24", c950="#082b14",)
 APP_THEME = gr.themes.Soft(
-	primary_hue="blue",
+	primary_hue=LOGO_GREEN,
 	neutral_hue="slate",
 	radius_size="lg",
 	font=[gr.themes.GoogleFont("Noto Sans KR"), "sans-serif"],
