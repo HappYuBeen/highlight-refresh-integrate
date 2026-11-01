@@ -111,6 +111,54 @@ CHAT_TITLE_STYLE = """
 	opacity: 0.45;
 	pointer-events: none;
 }
+/* 보고서 목록 칸: 줄어들지 않게 하고, 목록은 최대 높이까지만 보이고 넘치면 목록 안에서 스크롤 (출처 자리를 남김) */
+#chat-source-body .form:has(#chat-report-list),
+#chat-report-list {
+	flex-shrink: 0 !important;
+}
+#chat-report-list [data-testid="checkbox-group"] {
+	max-height: 12rem;
+	overflow-y: auto;
+	/* 소스 칸 전체의 스크롤바 숨김을 덮어써서 보고서 목록에서는 스크롤바가 보이게 함 */
+	scrollbar-width: thin;
+	scrollbar-color: var(--neutral-400) transparent;
+}
+#chat-report-list [data-testid="checkbox-group"]::-webkit-scrollbar {
+	display: block;
+	width: 0.5rem;
+}
+#chat-report-list [data-testid="checkbox-group"]::-webkit-scrollbar-thumb {
+	background: var(--neutral-400);
+	border-radius: 0.25rem;
+}
+/* 출처 제목: 줄어들지 않고 항상 보이게 함 */
+#chat-sources-title {
+	flex-shrink: 0 !important;
+	overflow: visible !important;
+}
+/* 출처: 줄어들지 않고, 최대 높이까지만 보이고 넘치면 출처 칸 안에서만 스크롤 (스크롤바가 보이게 소스 칸의 숨김을 덮어씀) */
+#chat-sources {
+	flex-shrink: 0 !important;
+	max-height: 12rem;
+	overflow-x: hidden !important;
+	overflow-y: auto !important;
+	scrollbar-width: thin;
+	scrollbar-color: var(--neutral-400) transparent;
+}
+#chat-sources::-webkit-scrollbar {
+	display: block;
+	width: 0.5rem;
+}
+#chat-sources::-webkit-scrollbar-thumb {
+	background: var(--neutral-400);
+	border-radius: 0.25rem;
+}
+/* 답변을 만드는 동안 Gradio가 출력 칸에 두르는 초록 테두리(.generating)를 출처 칸에서는 숨김 */
+#chat-sources.generating,
+#chat-sources .generating {
+	border: none !important;
+	animation: none !important;
+}
 #chat-bot {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -180,11 +228,12 @@ def _sources_to_markdown(sources: list[dict]) -> str:
 	"""format_sources() 결과를 화면에 보여 줄 Markdown으로 바꾼다.
 
 	한 줄에 '보고서명 · p.쪽수 · 섹션명(차트는 그림 n(차트))'이다. 섹션명이 없는 표는 '표'로 적는다.
+	'출처' 제목은 build_chat_tab()이 따로 두므로 여기서는 목록만 만든다.
 	출처가 없으면 빈 문자열을 돌려준다 ('자료에 없습니다' 답변에는 출처를 보이지 않는다).
 	"""
 	if not sources:
 		return ""
-	lines = ["**출처**"]
+	lines = []
 	for source in sources:
 		start, end = source["page_start"], source["page_end"]
 		pages = f"p.{start}" if start == end else f"p.{start}-{end}"
@@ -276,8 +325,9 @@ def build_chat_tab():
 					# 검색 옵션은 화면에 두지 않고 기본값(k=DEFAULT_K, MMR 끔)을 그대로 쓴다
 					k = gr.State(DEFAULT_K)
 					use_mmr = gr.State(False)
-					# 출처: 답변이 끝나면 respond_stream()이 채운다 (없으면 빈칸)
-					sources = gr.Markdown()
+					# 출처: 제목은 항상 보이고, 목록은 답변이 끝나면 respond_stream()이 채운다 (없으면 빈칸)
+					gr.Markdown("**출처**", elem_id="chat-sources-title")
+					sources = gr.Markdown(elem_id="chat-sources")
 				# 누르면 채팅 칸 자리에 과거 대화 기록(build_history_panel, 임세준)이 보인다 (연결은 build_app)
 				history_btn = gr.Button("과거 대화 기록", elem_id="chat-history-btn")
 			# 가운데: 채팅 (대화창 → 추천 질문 → 질문 입력칸)
