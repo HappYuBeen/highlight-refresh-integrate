@@ -5,7 +5,10 @@
 - 로그인 버튼·로그아웃 버튼 연결은 app.py의 build_app()에서 한다
 - 그래서 build_app()에서 쓸 화면 부품을 login_components에 담아 둔다
 """
+import base64
 import uuid
+from pathlib import Path
+
 import gradio as gr
 
 from hri.service.user_service import login, register
@@ -15,6 +18,18 @@ from hri.exception.errors import LoginFailedError, DuplicateUserError
 
 # build_app()에서 로그인 버튼을 연결할 때 쓰려고 화면 부품을 저장해 둠
 login_components = {}
+
+# 팀 로고 (프로젝트 폴더의 assets/logo.png). 파일 경로를 따로 열어 두지 않아도 되게 글자(base64)로 바꿔 화면에 바로 넣는다
+LOGO_PATH = Path(__file__).resolve().parents[2] / "assets" / "logo.png"
+
+
+def _logo_html() -> str:
+	"""로그인 칸 맨 위에 넣을 로고 <img> HTML. 로고 파일이 없으면 빈 문자열 (로고 없이 제목만 보임)"""
+	try:
+		data = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+	except OSError:
+		return ""
+	return f'<img src="data:image/png;base64,{data}" alt="HRI 로고">'
 
 # 로그인 폼 칸을 가운데에 고정하는 스타일 (rem·em만 씀, 그리드 없음, 색 지정 없음)
 LOGIN_BOX_STYLE = """
@@ -39,6 +54,15 @@ LOGIN_BOX_STYLE = """
 #login-title,
 #login-title * {
 	text-align: center;
+}
+/* 팀 로고: 제목 위 가운데 */
+#login-logo {
+	display: flex;
+	justify-content: center;
+}
+#login-logo img {
+	width: 9.5rem;
+	height: auto;
 }
 #login-box * {
 	scrollbar-width: none;
@@ -68,7 +92,9 @@ def build_login_tab():
 	# 바깥 칸(login-wrap)은 가로 가운데 맞춤, 안쪽 칸(login-box)이 실제 로그인 폼
 	with gr.Column(elem_id="login-wrap") as login_tab:
 		with gr.Column(elem_id="login-box"):
-			# 칸 맨 위에 서비스 이름을 글자로 보여 준다 (회원가입 때는 "## 회원가입"으로 바뀜)
+			# 칸 맨 위에 팀 로고
+			gr.HTML(_logo_html(), elem_id="login-logo")
+			# 로고 아래에 서비스 이름을 글자로 보여 준다 (회원가입 때는 "## 회원가입"으로 바뀜)
 			title = gr.Markdown("# HRI Insight Bridge", elem_id="login-title")
 
 			user_id = gr.Textbox(label="아이디", placeholder="아이디를 입력하세요")
