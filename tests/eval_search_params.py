@@ -31,6 +31,10 @@
 옵션
 	--sizes 300,500,800,1000  --overlaps 0,50,100  --ks 1-10  --mmr both|on|off  --thresholds 0.10:0.60:0.05
 	--report-ids FX=3,PR=4,GR=5  --persona 실무자
+리포트 (마크다운)
+	search_grid_<시각>_리포트.md    : 지표 계산식 → 추천 설정을 고른 규칙 1~4의 단계별 개수 → 추천·현재 설정의 질문별
+	                                  기대(정답 쪽 / 근거 없음)·실제 근거 문서·적중 계산 → 현재 설정에서 하나씩 바꾼 비교표
+	search_answers_<시각>_리포트.md : 설정별 결과 → 최종 추천 계산 → 설정마다 문항별 질문·기대 답변·실제 답변·채점 근거
 임베딩(text-embedding-3-large)·확장 질문 캐시는 모델 이름별 파일로 logs/eval_search/에 저장한다.
 임베딩 모델(text-embedding-3-large)로 바뀌며 점수 분포가 달라졌을 수 있어 THRESHOLD 기본 범위를 0.10부터로 넓혔다.
 """
@@ -47,6 +51,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+
+from tests.eval_report import FAIL, PASS, mark, mean_formula, table, write_report
 
 DEFAULT_ANSWERS = Path("tests/fixtures/qa_answers.json")
 DEFAULT_OUT_OF_SCOPE = Path("tests/fixtures/qa_out_of_scope.json")
@@ -411,6 +417,7 @@ def recommend(rows: list[dict], n_in: int) -> list[dict]:
 def run_answers(args, data, id_of, report_data, emb_cache, settings, specs: list[str]) -> tuple[list[dict], list[dict]]:
 	from hri.vector_store.embedding import embed_texts
 
+	import tests.eval_qa_accuracy as qa
 	from tests.eval_qa_accuracy import format_source_pages, keyword_score, run_question, source_match
 
 	code_of = {v: k for k, v in id_of.items()}
@@ -437,10 +444,19 @@ def run_answers(args, data, id_of, report_data, emb_cache, settings, specs: list
 				except Exception as error:  # 한 문항이 실패해도 계속
 					result = {"route": "error", "answer": f"{type(error).__name__}: {error}", "sources": [], "ms": None, "tokens": None, "cost": None}
 					acc, src = None, None
+				src_pages = format_source_pages(result["sources"], code_of)
 				rows.append({"설정": name, "번호": it["id"], "질문": it["question"], "route": result["route"],
 					"응답시간(ms)": result["ms"], "토큰": result["tokens"], "비용(원)": result["cost"],
-					"정확도(자동 후보)": acc, "출처 일치": src, "응답 출처 쪽": format_source_pages(result["sources"], code_of),
-					"답변": result["answer"]})
+					"정확도(자동 후보)": acc, "출처 일치": src, "응답 출처 쪽": src_pages,
+					"답변": result["answer"],
+					# 리포트에서 eval_qa_accuracy.item_markdown으로 그리기 위한 같은 모양의 행 (CSV에는 안 들어감)
+					"_qa": {qa.C_ID: it["id"], qa.C_REPORTS: "+".join(it["reports"]), qa.C_TYPE: it["type"],
+						qa.C_QUESTION: it["question"], qa.C_KEY: it["answer"], qa.C_KW: ", ".join(it["keywords"]),
+						qa.C_PAGES: qa.pages_text(it["pages"]), qa.C_ROUTE: result["route"], qa.C_SCORE: None,
+						qa.C_ANSWER: result["answer"], qa.C_SRC: src_pages, qa.C_MS: result["ms"], qa.C_TOKENS: result["tokens"],
+						qa.C_COST: result["cost"], qa.C_ACC: acc, qa.C_SRC_OK: src,
+						qa.C_REASON: qa.guess_reason(result["route"], acc or 0, src or 0) if acc is not None else "기타",
+						qa.C_MEMO: f"설정 {name}"}})
 		detail.extend(rows)
 		ms = [r["응답시간(ms)"] for r in rows if r["응답시간(ms)"] is not None]
 		costs = [r["비용(원)"] for r in rows if r["비용(원)"] is not None]
@@ -514,6 +530,149 @@ def grid_markdown(rows: list[dict], ranked: list[dict], base: dict | None, repor
 	return lines
 
 
+# =====================================================================
+# 8-1. 마크다운 리포트 (설정 고르는 계산 과정 + 질문별 기대·실제·근거)
+# =====================================================================
+METRIC_RULES = [
+	"- **근거 쪽 적중률** = 근거 문서 중 정답 쪽을 포함하는 문서가 있는 안 질문 수 / 안 질문 수 "
+	"(정답 보고서가 여럿이면 보고서마다 있어야 적중, eval_qa_accuracy의 출처 일치와 같은 기준)",
+	"- **1순위 적중률** = 첫 번째 근거 문서가 정답 쪽을 포함하는 안 질문 수 / 안 질문 수",
+	"- **근거 없음 오판율** = 검색 결과가 0개(THRESHOLD에 모두 걸림)인 안 질문 수 / 안 질문 수 — 낮을수록 좋음",
+	"- **밖 질문 차단율** = 검색 결과가 0개인 밖 질문 수 / 밖 질문 수 — 높을수록 좋음",
+	"- **평균 근거 문서 수·컨텍스트 글자 수** = get_context_docs() 규칙으로 만든 근거 문서(같은 섹션·표는 1번)의 개수·글자 수 평균 "
+	"(근거를 찾은 안 질문만)",
+]
+
+
+def recommend_steps(rows: list[dict], n_in: int) -> list[str]:
+	"""recommend()가 규칙 1~4로 후보를 줄여 간 과정을 숫자로 적는다."""
+	lines = [f"전체 조합 {len(rows):,}개에서 시작한다.", ""]
+	ok = [r for r in rows if r["근거 없음 오판율"] <= MAX_MISS_RATE + 1e-9]
+	max_miss = int(MAX_MISS_RATE * n_in + 1e-9)
+	lines.append(f"1. 근거 없음 오판율 ≤ {MAX_MISS_RATE:.0%} (안 질문 {n_in}개 중 오판 {max_miss}개 이하) → **{len(ok):,}개** 남음")
+	if not ok:
+		return lines + ["", "남는 설정이 없어 추천하지 않음 (THRESHOLD 범위를 낮춰 다시 실행)", ""]
+	best_hit = max(r["근거 쪽 적중"] for r in ok)
+	near = [r for r in ok if r["근거 쪽 적중"] >= best_hit - HIT_TOLERANCE_QUESTIONS]
+	lines.append(f"2. 그중 근거 쪽 적중 최고 = {best_hit}/{n_in} → {best_hit} - {HIT_TOLERANCE_QUESTIONS} = "
+		f"{best_hit - HIT_TOLERANCE_QUESTIONS}문항 이상 → **{len(near):,}개** 남음")
+	best_block = max(r["밖 질문 차단율"] for r in near)
+	top_block = [r for r in near if r["밖 질문 차단율"] == best_block]
+	lines.append(f"3. 그중 밖 질문 차단율 최고 = {best_block:.1%} → **{len(top_block):,}개**")
+	min_ctx = min(r["평균 컨텍스트 글자 수"] for r in top_block)
+	final = [r for r in top_block if r["평균 컨텍스트 글자 수"] == min_ctx]
+	lines.append(f"4. 그중 평균 컨텍스트 글자 수 최소 = {min_ctx:,}자 → **{len(final):,}개** "
+		f"(여럿이면 CSV 순서상 앞의 것) → 추천 **{final[0]['설정']}**")
+	return lines + [""]
+
+
+def _docs_text(docs: list[tuple], code_of: dict[int, str]) -> str:
+	return ", ".join(f"{code_of.get(d[0], d[0])} p.{d[1]}-{d[2]}" for d in docs) or "(없음)"
+
+
+def question_details(spec: str, data, oos, id_of, report_data, emb_cache, expansions, settings) -> list[dict]:
+	"""설정 1개로 질문 46개를 다시 검색해 질문마다 기대·실제 근거 문서·판정 근거를 만든다 (리포트용).
+
+	1단계 run_grid와 같은 메모리 검색을 쓰되, 미리 계산해 둔 후보 대신 MemoryIndex를 바로 부른다 (결과는 같음).
+	"""
+	from hri.vector_store.embedding import embed_texts
+
+	from tests.eval_qa_accuracy import explain_source_match
+
+	size, overlap, k, mmr, threshold = parse_config(spec)
+	code_of = {v: c for c, v in id_of.items()}
+	sections = {(s.report_id, s.section_no): s for secs in report_data["sections"].values() for s in secs}
+	chunks = build_chunks(report_data, size, overlap)
+	index = MemoryIndex(chunks, emb_cache.get([c.text for c in chunks], embed_texts))
+	questions = [(it, True) for it in data["items"]] + [(it, False) for it in oos["items"]]
+	texts = list(dict.fromkeys(t for it, _ in questions for t in [it["question"], *expansions[it["question"]]]))
+	vecs = dict(zip(texts, emb_cache.get(texts, embed_texts)))
+	replacements = dict(
+		load_settings=lambda t=threshold: SimpleNamespace(threshold=t),
+		vector_search=index.vector_search,
+		keyword_find=index.keyword_find,
+		expand_queries=lambda q: expansions[q],
+		embed_texts=lambda ts: [vecs[t] for t in ts],
+	)
+	out = []
+	with patched_search(**replacements) as s:
+		for it, inside in questions:
+			rids = [id_of[c] for c in it["reports"]]
+			found = s.hybrid_search(it["question"], k=k, report_ids=rids, use_mmr=mmr)
+			docs = context_docs(found, sections, report_data["table_lengths"], settings.max_context_chars) if found else []
+			row = {"번호": it["id"], "구분": "안" if inside else "밖", "질문": it["question"],
+				"근거 문서": _docs_text(docs, code_of), "근거 글자 수": sum(d[3] for d in docs)}
+			if inside:
+				expected = " / ".join(f"{c} {', '.join(map(str, p))}쪽" for c, p in it["pages"].items())
+				if not found:
+					row.update({"기대": f"근거 찾음 · 정답 쪽 {expected}", "적중": FAIL, "1순위": FAIL,
+						"계산": "검색 결과 0개 (모든 검색 문장의 score가 THRESHOLD 미만) → 근거 없음 오판"})
+				else:
+					_, _, calc = explain_source_match(it["pages"], [(code_of[d[0]], d[1], d[2]) for d in docs], "rag")
+					first = first_hit(docs, it["pages"], id_of)
+					row.update({"기대": f"근거 찾음 · 정답 쪽 {expected}", "적중": mark(gold_hit(docs, it["pages"], id_of)),
+						"1순위": mark(first), "계산": calc.replace("**", "") + f" · 1순위 {_docs_text(docs[:1], code_of)} → {'포함' if first else '미포함'}"})
+			else:
+				row.update({"기대": "근거 없음 (검색 결과 0개)", "적중": mark(not found), "1순위": "-",
+					"계산": "검색 결과 0개 → 차단" if not found else f"근거 문서 {len(docs)}개가 THRESHOLD를 넘음 → 차단 실패 (LLM 거절 규칙에 맡겨짐)"})
+			out.append(row)
+	return out
+
+
+def details_markdown(title: str, spec: str, grid_row: dict | None, rows: list[dict]) -> list[str]:
+	ins = [r for r in rows if r["구분"] == "안"]
+	outs = [r for r in rows if r["구분"] == "밖"]
+	hit = sum(r["적중"] == PASS for r in ins)
+	first = sum(r["1순위"] == PASS for r in ins)
+	miss = sum("근거 없음 오판" in r["계산"] for r in ins)
+	block = sum(r["적중"] == PASS for r in outs)
+	lines = [f"## {title}: {spec}", "", "지표 계산:", "",
+		f"- 근거 쪽 적중률 = {hit} / {len(ins)} = **{hit / len(ins):.1%}**" if ins else "",
+		f"- 1순위 적중률 = {first} / {len(ins)} = **{first / len(ins):.1%}**" if ins else "",
+		f"- 근거 없음 오판율 = {miss} / {len(ins)} = **{miss / len(ins):.1%}**" if ins else "",
+		f"- 밖 질문 차단율 = {block} / {len(outs)} = **{block / len(outs):.1%}**" if outs else ""]
+	if grid_row:
+		same = (grid_row["근거 쪽 적중"] == hit and grid_row["근거 없음 오판"] == miss and grid_row["밖 질문 차단"] == block)
+		lines.append(f"- 1단계 표 값과 대조: {mark(same)} {'같음' if same else '다름 — 검색을 다시 돌린 결과가 표와 달라 확인 필요'}")
+	headers = ["번호", "질문", "기대", "실제 근거 문서", "결과", "1순위", "계산"]
+	lines += ["", "### 보고서 안 질문", ""] + table(headers, [[r["번호"], r["질문"], r["기대"], r["근거 문서"], r["적중"], r["1순위"], r["계산"]] for r in ins])
+	lines += ["### 보고서 밖 질문", ""] + table(headers, [[r["번호"], r["질문"], r["기대"], r["근거 문서"], r["적중"], r["1순위"], r["계산"]] for r in outs])
+	return lines
+
+
+def answers_report(detail: list[dict], summary: list[dict], final: dict | None, conditions: str) -> list[str]:
+	"""2단계 리포트: 설정별 표 → 최종 추천 계산 → 설정별·문항별 상세(질문·기대 답변·실제 답변·채점 근거)."""
+	from tests.eval_qa_accuracy import item_markdown
+
+	lines = ["# 검색 설정 비교 리포트 (2단계: 답변까지)", "", conditions, "",
+		"## 0. 평가 방식", "",
+		"1단계 상위 설정과 현재 설정으로 보고서 안 질문을 실제로 답하게 하고, eval_qa_accuracy와 같은 규칙으로 채점한다.", "",
+		"- 정확도(자동 후보): 채점 키워드가 모두 있으면 1, 일부 0.5, 없으면 0 → 설정별 평균",
+		"- 출처 일치율: 정답 보고서마다 응답 출처가 정답 쪽을 포함하면 1 → 설정별 평균",
+		f"- 최종 추천: 정확도 최고값에서 {ACCURACY_TOLERANCE} 이내인 설정 중 문항당 비용이 가장 낮은 설정", "",
+		"## 1. 설정별 결과", ""]
+	lines += table(ANSWER_SUMMARY_COLUMNS, [[s[c] for c in ANSWER_SUMMARY_COLUMNS] for s in summary])
+	lines += ["## 2. 최종 추천 계산 과정", ""]
+	scored = [s for s in summary if s["정확도(자동 후보)"] is not None]
+	if scored:
+		best = max(s["정확도(자동 후보)"] for s in scored)
+		near = [s for s in scored if s["정확도(자동 후보)"] >= best - ACCURACY_TOLERANCE]
+		for s in scored:
+			accs = [r["정확도(자동 후보)"] for r in detail if r["설정"] == s["설정"] and r["정확도(자동 후보)"] is not None]
+			lines.append(f"- {s['설정']}: 정확도 = {mean_formula(accs)} · 문항당 비용 {s['문항당 비용(원)']}원")
+		lines += ["", f"1. 정확도 최고 = {best:.4f}",
+			f"2. {best:.4f} - {ACCURACY_TOLERANCE} = {best - ACCURACY_TOLERANCE:.4f} 이상인 설정: {', '.join(s['설정'] for s in near)}",
+			f"3. 그중 문항당 비용 최소 → **{final['설정'] if final else '-'}**", "",
+			"정확도는 키워드 자동 후보라 상위 설정은 아래 답변을 사람이 확인할 것.", ""]
+	else:
+		lines += ["채점된 설정이 없음", ""]
+	for s in summary:
+		lines += [f"## 3. 상세 — {s['설정']}", ""]
+		for r in (r for r in detail if r["설정"] == s["설정"]):
+			lines += item_markdown(r["_qa"])
+	return lines
+
+
 def main() -> None:
 	parser = argparse.ArgumentParser(description="검색 설정(MMR·k·CHUNK_SIZE·CHUNK_OVERLAP·THRESHOLD) 비교")
 	parser.add_argument("--answers", type=Path, default=DEFAULT_ANSWERS)
@@ -576,8 +735,20 @@ def main() -> None:
 		ranked = recommend(rows, len(data["items"]))
 		base = next((r for r in rows if r["설정"] == base_name), None)
 		md = grid_markdown(rows, ranked, base, report_data, settings, conditions)
-		(args.out_dir / f"search_grid_{stamp}_요약.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-		print(f"저장: {grid_path}")
+		# 리포트: 평가 방식 → 추천 고르는 과정 → 기존 비교표 → 추천·현재 설정의 질문별 상세
+		report = [md[0], "", conditions, "", "## 0. 평가 방식", "",
+			f"보고서 안 질문 {len(data['items'])}개와 밖 질문 {len(oos['items'])}개를 설정마다 hybrid_search()로 검색만 한다 (답변 LLM 없음).",
+			*METRIC_RULES, "", "## 1. 추천 설정을 고른 과정", "", *recommend_steps(rows, len(data["items"]))]
+		report += ["## 2. 비교표", ""] + [("#" + ln if ln.startswith("## ") else ln) for ln in md[3:]]
+		detail_specs = [("3. 추천 설정 질문별 결과", ranked[0]["설정"])] if ranked else []
+		if base and (not ranked or base["설정"] != ranked[0]["설정"]):
+			detail_specs.append(("4. 현재 설정 질문별 결과", base["설정"]))
+		for title, spec in detail_specs:
+			grid_row = next((r for r in rows if r["설정"] == spec), None)
+			report += [""] + details_markdown(title, spec, grid_row,
+				question_details(spec, data, oos, id_of, report_data, emb_cache, expansions, settings))
+		report_path = write_report(args.out_dir / f"search_grid_{stamp}_리포트.md", report)
+		print(f"저장: {grid_path} · 리포트: {report_path}")
 		if args.answer_top:
 			chosen = []
 			for r in ranked:
@@ -592,14 +763,10 @@ def main() -> None:
 		write_csv(args.out_dir / f"search_answers_{stamp}.csv", ANSWER_COLUMNS, detail)
 		write_csv(args.out_dir / f"search_answers_{stamp}_설정별.csv", ANSWER_SUMMARY_COLUMNS, summary)
 		final = pick_final(summary)
-		lines = ["# 검색 설정 비교 (2단계: 답변까지)", "", conditions, "",
-			"| " + " | ".join(ANSWER_SUMMARY_COLUMNS) + " |", "|" + "---|" * len(ANSWER_SUMMARY_COLUMNS)]
-		lines += ["| " + " | ".join(str(s[c]) for c in ANSWER_SUMMARY_COLUMNS) + " |" for s in summary]
+		report_path = write_report(args.out_dir / f"search_answers_{stamp}_리포트.md", answers_report(detail, summary, final, conditions))
 		if final:
-			lines += ["", f"→ **최종 추천: {final['설정']}** (정확도 최고값에서 {ACCURACY_TOLERANCE} 이내 중 문항당 비용 최소). "
-				"정확도는 키워드 자동 후보라 상위 설정은 답변을 사람이 확인할 것"]
-		(args.out_dir / f"search_answers_{stamp}_요약.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-		print(f"저장: {args.out_dir / f'search_answers_{stamp}_설정별.csv'}")
+			print(f"최종 추천: {final['설정']} (정확도 최고값에서 {ACCURACY_TOLERANCE} 이내 중 문항당 비용 최소)")
+		print(f"저장: {args.out_dir / f'search_answers_{stamp}_설정별.csv'} · 리포트: {report_path}")
 
 
 if __name__ == "__main__":

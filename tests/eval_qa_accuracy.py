@@ -7,6 +7,11 @@ generate 노드와 같은 순서로 이미 있는 함수를 직접 부른다.
 	hybrid_search → (근거 없음이면 '자료에 없습니다', LLM 호출 없음)
 	→ get_context_docs → format_docs → build_messages → get_chat_model().invoke → format_sources
 
+결과 리포트 (마크다운, logs/eval_qa/qa_results_<시각>_리포트.md)
+	문항마다 질문 → 기대 답변(정답·정답 출처 쪽) → 실제 출력(답변·route·응답 출처) → 평가 근거(키워드별 일치 여부,
+	보고서별 출처 포함 여부, 실패 원인을 고른 규칙) → 점수 계산식을 적는다.
+	맨 앞에는 평가 방식, 전체 지표와 그 계산 과정(점수 합 / 채점 수), 유형·보고서·실패 원인별 표가 있다.
+
 결과 CSV (UTF-8 BOM이라 엑셀로 바로 열림)
 	route / has_source / 1등 score(원 질문 의미 검색 1등, THRESHOLD 적용 전) / 답변 / 응답 출처 쪽
 	응답시간(ms, 1등 score 측정 제외) / 토큰 / 비용(원)
@@ -32,18 +37,21 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from tests.eval_report import FAIL, PASS, kv_table, mark, mean_formula, quote, score_mark, table, write_report
+
 DEFAULT_ANSWERS = Path("tests/fixtures/qa_answers.json")
 DEFAULT_OUT_DIR = Path("logs/eval_qa")
 NO_ANSWER_TEXT = "자료에 없습니다"  # qa_graph.NO_ANSWER_TEXT와 같은 문구
 
 # 결과 CSV 열 (엑셀에서 사람이 읽고 고치므로 한글 머리글). --summary가 이 이름으로 다시 읽는다.
 C_ID, C_REPORTS, C_TYPE, C_QUESTION, C_KEY, C_PAGES = "번호", "보고서", "유형", "질문", "정답", "정답 출처 쪽"
+C_KW = "채점 키워드"  # 리포트에서 키워드별 일치 근거를 다시 계산할 때 쓴다 (쉼표로 구분)
 C_ROUTE, C_HAS, C_SCORE, C_ANSWER, C_SRC = "route", "has_source", "1등 score", "답변", "응답 출처 쪽"
 C_MS, C_TOKENS, C_COST = "응답시간(ms)", "토큰", "비용(원)"
 C_ACC, C_SRC_OK, C_REASON, C_MEMO = "정확도 점수", "출처 일치", "실패 원인", "메모"
-RESULT_COLUMNS = [C_ID, C_REPORTS, C_TYPE, C_QUESTION, C_KEY, C_PAGES, C_ROUTE, C_HAS, C_SCORE, C_ANSWER,
+RESULT_COLUMNS = [C_ID, C_REPORTS, C_TYPE, C_QUESTION, C_KEY, C_KW, C_PAGES, C_ROUTE, C_HAS, C_SCORE, C_ANSWER,
 	C_SRC, C_MS, C_TOKENS, C_COST, C_ACC, C_SRC_OK, C_REASON, C_MEMO]
-PERSONA_COLUMNS = ["번호", "질문", "페르소나", "기대 특징", "답변", "글자 수", "형식 자동 후보",
+PERSONA_COLUMNS = ["번호", "질문", "정답", "페르소나", "기대 특징", "답변", "글자 수", "형식 자동 후보", "형식 판정 근거",
 	"말투(O/X)", "형식(O/X)", "용어 처리(O/X)", "수치·출처 정확(O/X)", "메모"]
 
 
@@ -254,12 +262,272 @@ def summarize(rows: list[dict], conditions: str = "") -> str:
 	return "\n".join(lines) + "\n"
 
 
-def write_summary(rows: list[dict], csv_path: Path, conditions: str = "") -> None:
-	text = summarize(rows, conditions)
-	out = csv_path.with_name(csv_path.stem + "_요약.md")
-	out.write_text(text, encoding="utf-8")
-	print("\n" + text)
-	print(f"요약 저장: {out}")
+def write_summary(rows: list[dict], csv_path: Path, conditions: str = "", persona_rows: list[dict] | None = None) -> None:
+	"""콘솔에는 요약 표만, 파일에는 문항별 상세까지 담은 리포트를 쓴다."""
+	print("\n" + summarize(rows, conditions))
+	out = write_report(csv_path.with_name(csv_path.stem + "_리포트.md"), build_report(rows, conditions, persona_rows))
+	print(f"리포트 저장: {out}")
+
+
+# ---------------------------------------------------------------------
+# 4-1. 마크다운 리포트 (문항마다 질문 → 기대 답변 → 실제 출력 → 평가 근거 → 계산)
+# ---------------------------------------------------------------------
+_EXPECTED_PAGES_RE = re.compile(r"([A-Za-z]+)\s+([\d,\s]+)")
+_SOURCE_PAGES_RE = re.compile(r"(\S+)\s+p\.(\d+)-(\d+)")
+
+
+def parse_expected_pages(text: str) -> dict[str, list[int]]:
+	"""'GR 6, 20 / FX 5' → {'GR': [6, 20], 'FX': [5]} (pages_text의 반대)"""
+	out = {}
+	for part in (text or "").split("/"):
+		m = _EXPECTED_PAGES_RE.search(part)
+		if m:
+			out[m.group(1)] = [int(p) for p in re.findall(r"\d+", m.group(2))]
+	return out
+
+
+def parse_source_pages(text: str) -> list[tuple[str, int, int]]:
+	"""'FX p.5-5; FX p.12-13' → [('FX', 5, 5), ('FX', 12, 13)] (format_source_pages의 반대)"""
+	return [(c, int(s), int(e)) for c, s, e in _SOURCE_PAGES_RE.findall(text or "")]
+
+
+def explain_keyword_score(answer: str, keywords: list[str], route: str) -> tuple[float | None, list[list], str]:
+	"""keyword_score와 같은 점수 + 키워드별 표 + 계산식 (리포트용)."""
+	body = _normalize(answer)
+	rows = [[w, _normalize(w), PASS if route == "rag" and _normalize(w) in body else FAIL] for w in keywords]
+	if route == "error":
+		return None, rows, "실행 오류라 채점하지 않음 (채점 수에서 뺌)"
+	if route != "rag":
+		return 0.0, rows, f"route={route} → 근거로 답하지 않았으므로 0점 (규칙: '자료에 없습니다'·근거 없음은 0)"
+	if not keywords:
+		return 0.0, rows, "채점 키워드가 없어 0점"
+	hit = sum(r[2] == PASS for r in rows)
+	score = 1.0 if hit == len(keywords) else 0.5 if hit else 0.0
+	level = "모두 있음" if score == 1 else "일부만 있음" if score else "하나도 없음"
+	return score, rows, (f"키워드 {hit}/{len(keywords)}개 일치 → {level} → **{score:g}점** "
+		"(규칙: 모두 1 / 일부 0.5 / 없음 0, 공백·쉼표·%·△·마이너스 기호를 지우고 비교)")
+
+
+def explain_source_match(expected: dict[str, list[int]], sources: list[tuple[str, int, int]],
+		route: str) -> tuple[int | None, list[list], str]:
+	"""source_match와 같은 점수 + 보고서별 표 + 계산식 (리포트용)."""
+	rows, ok_count = [], 0
+	for code, pages in expected.items():
+		same_report = [f"{c} p.{s}-{e}" for c, s, e in sources if c == code]
+		hit = [f"{c} p.{s}-{e}" for c, s, e in sources if c == code and any(s <= p <= e for p in pages)]
+		ok_count += bool(hit)
+		rows.append([code, ", ".join(map(str, pages)), ", ".join(same_report) or "(없음)", ", ".join(hit) or "(없음)", mark(bool(hit))])
+	if route == "error":
+		return None, rows, "실행 오류라 채점하지 않음"
+	if route != "rag":
+		return 0, rows, f"route={route} → 응답 출처가 없으므로 0"
+	score = int(ok_count == len(expected))
+	return score, rows, (f"정답 보고서 {len(expected)}개 중 {ok_count}개에서 정답 쪽을 포함하는 출처가 있음 → "
+		f"모두 있어야 1 → **{score}**")
+
+
+def explain_reason(route: str, acc: float | None, src_ok: int | None) -> str:
+	"""guess_reason이 어떤 규칙으로 실패 원인을 골랐는지 글로 쓴다."""
+	if route == "error":
+		return "실행 오류 → '기타'"
+	if route == "no_answer":
+		return "보고서 안 질문인데 route=no_answer(근거 없음 처리) → '근거없음 오판'"
+	if acc is None or src_ok is None:
+		return "채점 칸이 비어 있어 원인을 정하지 않음"
+	if acc < 1 and src_ok == 0:
+		return f"정확도 {acc:g} < 1 이고 출처도 불일치 → 정답 쪽을 검색해 오지 못함 → '검색 실패'"
+	if acc < 1:
+		return f"출처는 맞지만 정확도 {acc:g} < 1 → 근거를 받고도 답을 틀림 → '답변 오류'"
+	if src_ok == 0:
+		return "정확도 1 이지만 출처 쪽이 정답과 다름 → '출처 오류'"
+	return "정확도 1 · 출처 일치 1 → 실패 아님"
+
+
+def _fmt_num(value, unit: str = "", digits: int = 0) -> str:
+	v = _num(value)
+	return "-" if v is None else f"{v:,.{digits}f}{unit}"
+
+
+def item_markdown(row: dict) -> list[str]:
+	"""결과 행 1개 → 리포트 한 문항. 새로 실행한 결과든 엑셀에서 고친 CSV든 같은 행으로 그린다."""
+	route = row.get(C_ROUTE) or ""
+	keywords = [w.strip() for w in (row.get(C_KW) or "").split(",") if w.strip()]
+	auto_acc, kw_rows, kw_calc = explain_keyword_score(row.get(C_ANSWER) or "", keywords, route)
+	expected = parse_expected_pages(row.get(C_PAGES))
+	auto_src, src_rows, src_calc = explain_source_match(expected, parse_source_pages(row.get(C_SRC)), route)
+	acc, src_ok = _num(row.get(C_ACC)), _num(row.get(C_SRC_OK))
+
+	head = f"### {row[C_ID]} · {score_mark(acc)} 정확도 {_fmt_num(acc, digits=1)} · {mark(None if src_ok is None else src_ok >= 1)} 출처 {_fmt_num(src_ok)}"
+	lines = [head, "", f"유형 **{row.get(C_TYPE)}** · 보고서 **{row.get(C_REPORTS)}**", "",
+		"**질문**", "", *quote(row.get(C_QUESTION)),
+		f"**기대 답변** (정답 출처 쪽: {row.get(C_PAGES) or '-'})", "", *quote(row.get(C_KEY)),
+		f"**실제 출력** — route=`{route}` · 1등 score {row.get(C_SCORE) or '-'} · "
+		f"{_fmt_num(row.get(C_MS), 'ms')} · 토큰 {_fmt_num(row.get(C_TOKENS))} · 비용 {_fmt_num(row.get(C_COST), '원', 2)}", "",
+		*quote(row.get(C_ANSWER)),
+		f"응답 출처 쪽: {row.get(C_SRC) or '(없음)'}", "",
+		"**평가 근거**", "",
+		"① 정확도 — 채점 키워드가 답변에 있는지", ""]
+	if kw_rows:
+		lines += table(["채점 키워드", "비교값(정규화)", "답변에 있음"], kw_rows)
+	else:
+		lines += ["(채점 키워드 칸이 비어 있음 — 예전 CSV면 정답셋의 keywords를 '채점 키워드' 칸에 넣으면 근거가 나옴)", ""]
+	lines += [f"계산: {kw_calc}", "", "② 출처 일치 — 응답 출처의 쪽 범위가 정답 쪽을 포함하는지", ""]
+	lines += table(["정답 보고서", "정답 쪽", "같은 보고서의 응답 출처", "정답 쪽을 포함하는 출처", "판정"], src_rows)
+	reason_note = explain_reason(route, acc, src_ok)
+	if route in ("rag", "no_answer", "error") and acc is not None and src_ok is not None:
+		rule_reason = guess_reason(route, acc, int(src_ok))
+		if rule_reason != (row.get(C_REASON) or ""):
+			reason_note += f" (CSV에 기록된 원인은 '{row.get(C_REASON) or '없음'}' — 사람이 고친 값이면 그대로 둠)"
+	lines += [f"계산: {src_calc}", "", f"③ 실패 원인 (규칙): {reason_note}", ""]
+
+	final = [f"정확도 **{_fmt_num(acc, digits=1)}**", f"출처 일치 **{_fmt_num(src_ok)}**", f"실패 원인 **{row.get(C_REASON) or '없음'}**"]
+	lines += ["**최종 점수**: " + " · ".join(final), ""]
+	edits = []
+	if keywords and auto_acc is not None and acc is not None and abs(auto_acc - acc) > 1e-9:
+		edits.append(f"정확도 자동 {auto_acc:g} → 사람 {acc:g}")
+	if expected and auto_src is not None and src_ok is not None and auto_src != src_ok:
+		edits.append(f"출처 일치 자동 {auto_src} → 사람 {src_ok:g}")
+	if edits:
+		lines += ["사람이 고친 값: " + " / ".join(edits), ""]
+	if row.get(C_MEMO):
+		lines += [f"메모: {row[C_MEMO]}", ""]
+	return lines + ["---", ""]
+
+
+def persona_format_detail(persona: str, answer: str, practitioner_len: int | None) -> tuple[str, str]:
+	"""persona_format_check와 같은 판정 + 그렇게 판정한 근거 (리포트용)."""
+	text = (answer or "").strip()
+	if not text or text.startswith("자료에 없습니다"):
+		return "-", "답변이 없거나 '자료에 없습니다'라 형식을 보지 않음"
+	if persona == "입문자":
+		explains = [m for m in _TERM_EXPLAIN_RE.findall(text) if not m.startswith("출처")]
+		hard = sorted(set(re.findall(r"VAR|모형", text)))
+		ok = bool(explains) and not hard
+		return ("O" if ok else "X"), (f"괄호 용어 풀이 {len(explains)}개({', '.join(explains[:3]) or '없음'}) · "
+			f"어려운 용어 {', '.join(hard) or '없음'} → 기대: 풀이 1개 이상 · 어려운 용어 없음")
+	if persona == "실무자":
+		heads = [line.split(":")[0].strip() for line in text.splitlines() if ":" in line]
+		missing = [h for h in ("결론", "근거", "시사점") if h not in heads]
+		return ("O" if not missing else "X"), (f"줄머리 {', '.join(heads) or '없음'} → 기대: 결론·근거·시사점 모두 · "
+			f"빠진 것 {', '.join(missing) or '없음'}")
+	if persona == "전문가":
+		starts = text.startswith("결론:")
+		need = None if practitioner_len is None else practitioner_len * 1.3
+		deeper = need is None or len(text) >= need
+		length_note = "실무자 답변 없음 → 길이 조건 생략" if need is None else f"{len(text)}자 ≥ 실무자 {practitioner_len}자 × 1.3 = {need:.0f}자 → {mark(deeper)}"
+		return ("O" if not starts and deeper else "X"), f"'결론:'으로 시작 {'함' if starts else '안 함'}(기대: 안 함) · {length_note}"
+	return "-", "알 수 없는 페르소나"
+
+
+def persona_markdown(rows: list[dict]) -> list[str]:
+	lines = ["## 페르소나 비교", "",
+		"같은 질문을 입문자·실무자·전문가로 실행해 기대 특징과 실제 답변을 나란히 둔다. "
+		"'형식 자동 후보'만 자동이고, 말투·용어·수치는 사람이 O/X 칸에 적는다.", ""]
+	lines += table(["번호", "페르소나", "글자 수", "형식 자동 후보", "말투", "형식", "용어 처리", "수치·출처"],
+		[[r.get("번호"), r.get("페르소나"), r.get("글자 수"), r.get("형식 자동 후보"), r.get("말투(O/X)"),
+			r.get("형식(O/X)"), r.get("용어 처리(O/X)"), r.get("수치·출처 정확(O/X)")] for r in rows])
+	for qid in dict.fromkeys(r.get("번호") for r in rows):
+		group = [r for r in rows if r.get("번호") == qid]
+		lines += [f"### {qid} 페르소나 비교", "", "**질문**", "", *quote(group[0].get("질문"))]
+		if group[0].get("정답"):
+			lines += ["**기대 답변(수치 기준)**", "", *quote(group[0].get("정답"))]
+		practitioner_len = next((int(_num(r.get("글자 수")) or 0) for r in group if r.get("페르소나") == "실무자" and _num(r.get("글자 수"))), None)
+		for r in group:
+			auto, reason = persona_format_detail(r.get("페르소나"), r.get("답변"), practitioner_len)
+			lines += [f"#### {r.get('페르소나')}", "", f"**기대 특징**: {r.get('기대 특징')}", "",
+				f"**실제 출력** ({r.get('글자 수')}자)", "", *quote(r.get("답변")),
+				f"**평가 근거 (형식 자동 후보 {auto})**: {reason}", ""]
+			if r.get("메모"):
+				lines += [f"메모: {r['메모']}", ""]
+		lines += ["---", ""]
+	return lines
+
+
+def build_report(rows: list[dict], conditions: str = "", persona_rows: list[dict] | None = None) -> list[str]:
+	"""리포트 전체: 평가 방식 → 결과 요약 → 계산 과정 → 유형·보고서·원인별 → 문항별 상세 (→ 페르소나)."""
+	acc = [(r[C_ID], v) for r in rows if (v := _num(r.get(C_ACC))) is not None]
+	src = [(r[C_ID], v) for r in rows if (v := _num(r.get(C_SRC_OK))) is not None]
+	scores = [(r[C_ID], v) for r in rows if (v := _num(r.get(C_SCORE))) is not None]
+	ms = [v for r in rows if (v := _num(r.get(C_MS))) is not None]
+	costs = [v for r in rows if (v := _num(r.get(C_COST))) is not None]
+	tokens = [v for r in rows if (v := _num(r.get(C_TOKENS))) is not None]
+
+	lines = ["# 4.1.1 정답 질문 정확도·출처 일치율 평가 리포트", ""]
+	if conditions:
+		lines += [conditions, ""]
+	lines += ["## 0. 평가 방식", "",
+		"- **정확도**: 문항마다 정해 둔 채점 키워드가 답변에 모두 있으면 1, 일부면 0.5, 없으면 0. "
+		"route가 rag가 아니면(근거 없음) 0. 공백·쉼표·%·△·마이너스 기호를 지우고 비교한다.",
+		"- **출처 일치**: 정답 보고서마다 응답 출처 중 하나라도 정답 쪽을 포함하면 그 보고서는 일치. 모든 보고서가 일치해야 1.",
+		"- **실패 원인**: 근거없음 오판(no_answer) → 검색 실패(정확도<1·출처 0) → 답변 오류(정확도<1) → 출처 오류(출처 0) 순서로 정한다.",
+		"- 점수는 자동 후보값이다. CSV를 엑셀에서 고친 뒤 `--summary`로 다시 만들면 고친 값으로 계산하고, 문항 상세에 '사람이 고친 값'을 적는다.",
+		"- 전체 지표는 실행 오류(빈 칸) 문항을 빼고 계산한다.", ""]
+
+	lines += ["## 1. 결과 요약", ""]
+	lines += kv_table([
+		("전체 문항 수", len(rows)), ("채점 문항 수", len(acc)),
+		("**정확도**", _rate([v for _, v in acc])), ("**출처 일치율**", _rate([v for _, v in src])),
+		("route = rag", sum(r.get(C_ROUTE) == "rag" for r in rows)),
+		("근거없음 오판 (route = no_answer)", sum(r.get(C_ROUTE) == "no_answer" for r in rows)),
+		("실행 오류 (route = error)", sum(r.get(C_ROUTE) == "error" for r in rows)),
+		("평균 1등 score", f"{sum(v for _, v in scores) / len(scores):.3f}" if scores else "-"),
+		("최저 1등 score (4.1.2 기준값 참고)", f"{min(v for _, v in scores):.3f}" if scores else "-"),
+		("평균 응답시간 (ms)", f"{sum(ms) / len(ms):,.0f}" if ms else "-"),
+		("총 토큰", f"{sum(tokens):,.0f}"), ("총 비용 (원)", f"{sum(costs):,.2f}"),
+		("문항당 평균 비용 (원)", f"{sum(costs) / len(costs):,.2f}" if costs else "-"),
+	])
+
+	def ids_with(pairs, pred):
+		return ", ".join(i for i, v in pairs if pred(v)) or "없음"
+
+	lines += ["## 2. 계산 과정", "",
+		f"- 정확도 = 문항 점수 합 / 채점 문항 수 = {mean_formula([v for _, v in acc])}",
+		f"  - 1점: {ids_with(acc, lambda v: v >= 1)}",
+		f"  - 0.5점: {ids_with(acc, lambda v: 0 < v < 1)}",
+		f"  - 0점: {ids_with(acc, lambda v: v <= 0)}",
+		f"- 출처 일치율 = 일치 문항 수 / 채점 문항 수 = {mean_formula([v for _, v in src])}",
+		f"  - 불일치: {ids_with(src, lambda v: v < 1)}"]
+	if scores:
+		low = min(scores, key=lambda x: x[1])
+		lines += [f"- 평균 1등 score = {mean_formula([v for _, v in scores], digits=3, as_percent=False)} · 최저 {low[1]:.3f} ({low[0]})"]
+	if ms:
+		lines += [f"- 평균 응답시간 = {mean_formula(ms, digits=0, as_percent=False)} ms"]
+	if costs:
+		lines += [f"- 문항당 평균 비용 = {mean_formula(costs, digits=2, as_percent=False)} 원"]
+	lines += [""]
+
+	def breakdown(no: str, title: str, key: str) -> list[str]:
+		groups = defaultdict(list)
+		for r in rows:
+			groups[r.get(key)].append(r)
+		out_rows = []
+		for name, group in groups.items():
+			g_acc = [v for r in group if (v := _num(r.get(C_ACC))) is not None]
+			g_src = [v for r in group if (v := _num(r.get(C_SRC_OK))) is not None]
+			out_rows.append([name, len(group), len(g_acc), _rate(g_acc),
+				f"{sum(g_acc):g} / {len(g_acc)}" if g_acc else "-", _rate(g_src), f"{sum(g_src):g} / {len(g_src)}" if g_src else "-"])
+		return [f"## {no}. {title}", ""] + table(["구분", "문항 수", "채점 수", "정확도", "정확도 계산", "출처 일치율", "출처 계산"], out_rows)
+
+	lines += breakdown("3", "유형별", C_TYPE)
+	lines += breakdown("4", "보고서별", C_REPORTS)
+
+	reasons = defaultdict(list)
+	for r in rows:
+		if r.get(C_REASON):
+			reasons[r[C_REASON]].append(r[C_ID])
+	lines += ["## 5. 실패 원인별", ""]
+	lines += table(["원인", "문항 수", "문항"], [[n, len(ids), ", ".join(ids)] for n, ids in reasons.items()] or [["(없음)", 0, "-"]])
+
+	lines += ["## 문항별 상세", "", "한눈에 보기:", ""]
+	lines += table(["번호", "유형", "질문", "정확도", "출처", "실패 원인"],
+		[[r[C_ID], r.get(C_TYPE), r.get(C_QUESTION), f"{score_mark(_num(r.get(C_ACC)))} {_fmt_num(r.get(C_ACC), digits=1)}",
+			f"{mark(None if _num(r.get(C_SRC_OK)) is None else _num(r.get(C_SRC_OK)) >= 1)} {_fmt_num(r.get(C_SRC_OK))}",
+			r.get(C_REASON)] for r in rows])
+	for r in rows:
+		lines += item_markdown(r)
+	if persona_rows:
+		lines += persona_markdown(persona_rows)
+	return lines
 
 
 # ---------------------------------------------------------------------
@@ -295,7 +563,8 @@ def run_accuracy(data: dict, ids: dict[str, int], only: set[str] | None, persona
 
 		rows.append({
 			C_ID: item["id"], C_REPORTS: "+".join(item["reports"]), C_TYPE: item["type"],
-			C_QUESTION: item["question"], C_KEY: item["answer"], C_PAGES: pages_text(item["pages"]),
+			C_QUESTION: item["question"], C_KEY: item["answer"], C_KW: ", ".join(item["keywords"]),
+			C_PAGES: pages_text(item["pages"]),
 			C_ROUTE: result["route"], C_HAS: result["route"] == "rag", C_SCORE: score,
 			C_ANSWER: result["answer"], C_SRC: format_source_pages(result["sources"], code_of),
 			C_MS: result["ms"], C_TOKENS: result["tokens"], C_COST: result["cost"],
@@ -316,19 +585,7 @@ def persona_format_check(persona: str, answer: str, practitioner_len: int | None
 	실무자: '결론:' / '근거:' / '시사점:'으로 시작하는 줄이 모두 있으면 O
 	전문가: '결론:' 세 줄 형식이 아니고, 같은 질문의 실무자 답변보다 1.3배 이상 길면 O
 	"""
-	text = (answer or "").strip()
-	if not text or text.startswith("자료에 없습니다"):
-		return "-"
-	if persona == "입문자":
-		explains = [m for m in _TERM_EXPLAIN_RE.findall(text) if not m.startswith("출처")]
-		return "O" if explains and not re.search(r"VAR|모형", text) else "X"
-	if persona == "실무자":
-		heads = [line.split(":")[0].strip() for line in text.splitlines() if ":" in line]
-		return "O" if all(h in heads for h in ("결론", "근거", "시사점")) else "X"
-	if persona == "전문가":
-		deeper = practitioner_len is None or len(text) >= practitioner_len * 1.3
-		return "O" if not text.startswith("결론:") and deeper else "X"
-	return "-"
+	return persona_format_detail(persona, answer, practitioner_len)[0]
 
 
 def run_personas(data: dict, ids: dict[str, int], k: int, use_mmr: bool) -> list[dict]:
@@ -341,7 +598,8 @@ def run_personas(data: dict, ids: dict[str, int], k: int, use_mmr: bool) -> list
 		report_ids = [ids[c] for c in item["reports"]]
 		group = []
 		for persona in compare["personas"]:
-			row = {"번호": qid, "질문": item["question"], "페르소나": persona, "기대 특징": compare["expect"][persona]}
+			row = {"번호": qid, "질문": item["question"], "정답": item["answer"], "페르소나": persona,
+				"기대 특징": compare["expect"][persona]}
 			try:
 				row["답변"] = run_question(item["question"], report_ids, persona, k, use_mmr)["answer"]
 			except Exception as error:
@@ -352,7 +610,7 @@ def run_personas(data: dict, ids: dict[str, int], k: int, use_mmr: bool) -> list
 			print(f"[페르소나] {qid} {persona} 완료")
 		practitioner_len = next((r["글자 수"] for r in group if r["페르소나"] == "실무자" and r["글자 수"]), None)
 		for row in group:
-			row["형식 자동 후보"] = persona_format_check(row["페르소나"], row["답변"], practitioner_len)
+			row["형식 자동 후보"], row["형식 판정 근거"] = persona_format_detail(row["페르소나"], row["답변"], practitioner_len)
 		rows.extend(group)
 	return rows
 
@@ -387,7 +645,10 @@ def main() -> None:
 
 	# 채점한 CSV 다시 집계: DB·API가 필요 없다
 	if args.summary:
-		write_summary(read_csv(args.summary), args.summary)
+		# 같은 시각에 만든 페르소나 비교 CSV가 옆에 있으면 리포트에 함께 넣는다
+		persona_csv = args.summary.with_name(args.summary.name.replace("qa_results_", "persona_compare_"))
+		persona_rows = read_csv(persona_csv) if persona_csv != args.summary and persona_csv.exists() else None
+		write_summary(read_csv(args.summary), args.summary, "재집계 (--summary): 엑셀에서 고친 값으로 다시 계산함", persona_rows)
 		return
 
 	data = load_answers(args.answers)
@@ -414,12 +675,14 @@ def main() -> None:
 	write_csv(result_path, RESULT_COLUMNS, rows)
 	print(f"\n결과 저장: {result_path}")
 
+	persona_rows = None
 	if args.personas:
+		persona_rows = run_personas(data, ids, args.k, args.mmr)
 		persona_path = args.out_dir / f"persona_compare_{stamp}.csv"
-		write_csv(persona_path, PERSONA_COLUMNS, run_personas(data, ids, args.k, args.mmr))
+		write_csv(persona_path, PERSONA_COLUMNS, persona_rows)
 		print(f"페르소나 비교 저장: {persona_path}")
 
-	write_summary(rows, result_path, conditions)
+	write_summary(rows, result_path, conditions, persona_rows)
 	print("\n정확도 점수·출처 일치·실패 원인은 자동 후보값입니다. CSV를 엑셀로 열어 답변을 보고 고친 뒤 저장하고,")
 	print(f"poetry run python -m tests.eval_qa_accuracy --summary {result_path} 로 다시 집계하세요.")
 

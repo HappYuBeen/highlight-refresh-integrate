@@ -24,6 +24,8 @@
 	poetry run python -m tests.eval_threshold --thresholds 0.20:0.70:0.05 --report-ids FX=3,PR=4,GR=5
 
 결과는 logs/eval_threshold/에 저장한다 (logs/는 .gitignore 대상).
+	threshold_<시각>_리포트.md: 평가 방식 → 요약 → 추천값 계산 과정 → 질문별 판정(기대·실제·계산식)
+	                           → 밖 질문 답변 상세(질문·기대 답변·실제 답변·판정 근거)
 확정한 값은 .env의 THRESHOLD와 qa_design.md 4장 표에 옮긴다.
 """
 
@@ -39,6 +41,7 @@ from tests.eval_qa_accuracy import (
 	run_question,
 	write_csv,
 )
+from tests.eval_report import PASS, mark, quote, table, write_report
 
 DEFAULT_OUT_OF_SCOPE = Path("tests/fixtures/qa_out_of_scope.json")
 DEFAULT_OUT_DIR = Path("logs/eval_threshold")
@@ -93,6 +96,7 @@ def measure_scores(questions: list[dict], expansion: bool, code_of: dict[int, st
 				hit = hits[0]
 				where = f"{code_of.get(hit.chunk.report_id, hit.chunk.report_id)} p.{hit.chunk.page} ({hit.chunk.chunk_type})"
 				best.append((round(hit.score, 4), where, text))
+		q["query_scores"] = [(text, score, where) for score, where, text in best]  # 리포트 계산식용
 		q["score_orig"] = best[0][0] if best and best[0][2] == q["question"] else None
 		top = max(best, key=lambda b: b[0]) if best else (None, "", "")
 		q["score_eff"] = top[0]
@@ -223,6 +227,119 @@ def build_summary(questions, table, rec, rec_note, current, expansion, answers, 
 
 
 # ---------------------------------------------------------------------
+# 5-1. 마크다운 리포트 (질문마다 기대 → 실제 → 근거 → 계산)
+# ---------------------------------------------------------------------
+def _score_calc(q: dict, threshold: float) -> str:
+	"""질문 1개의 판정 계산식. 예) 'max(원 0.412, 확장 0.398·0.455·0.301) = 0.455 ≥ 0.30 → 근거 있음'"""
+	s = q.get("score_eff")
+	if s is None:
+		return "검색 결과 없음 → 근거 없음"
+	parts = q.get("query_scores") or []
+	orig = [f"{sc:.3f}" for text, sc, _ in parts if text == q["question"]]
+	exp = [f"{sc:.3f}" for text, sc, _ in parts if text != q["question"]]
+	head = f"max(원 {orig[0] if orig else '-'}, 확장 {'·'.join(exp)}) = " if exp else ""
+	op, verdict = ("≥", "근거 있음") if s >= threshold else ("<", "근거 없음")
+	return f"{head}{s:.3f} {op} {threshold:.2f} → {verdict}"
+
+
+def build_report(questions, table_rows, rec, rec_note, current, expansion, answers, conditions, min_recall) -> list[str]:
+	"""리포트 전체: 평가 방식 → 요약 → 추천값 계산 → 질문별 판정 → 할루시네이션 점검 상세."""
+	basis = "확장 포함" if expansion else "원 질문"
+	ins = [q for q in questions if q["side"] == "안" and q["score_eff"] is not None]
+	outs = [q for q in questions if q["side"] == "밖" and q["score_eff"] is not None]
+
+	lines = ["# 4.1.2 할루시네이션·THRESHOLD 점검 리포트", "", conditions, "",
+		"## 0. 평가 방식", "",
+		f"- 질문마다 **{basis} 1등 score**(코사인 유사도)를 잰다. 확장 포함이면 원 질문과 확장 질문 3개 각각의 1등 score 중 최댓값 "
+		"(safe_search가 질문별로 THRESHOLD를 적용하므로, 하나라도 넘으면 근거가 생긴다).",
+		"- **기대 결과**: 보고서 안 질문은 score ≥ THRESHOLD(근거 있음), 보고서 밖 질문은 score < THRESHOLD(근거 없음).",
+		"- **추천 규칙**: 안 질문 최저 score > 밖 질문 최고 score면 둘의 중간값. 겹치면 안 질문 근거 찾음 비율이 "
+		f"{min_recall:.0%} 이상인 후보 중 가장 높은 값(지어냄을 줄이는 쪽).",
+		"- **할루시네이션 판정**(--run-out): 밖 질문을 실제로 답하게 해서 route=no_answer이거나 답변에 '자료에 없습니다'가 "
+		"있으면 통과, 아니면 할루시네이션 후보. 비교는 공백·기호를 지우고 한다.", ""]
+
+	# 요약 (콘솔 요약과 같은 내용, 제목만 한 단계 내림)
+	summary = build_summary(questions, table_rows, rec, rec_note, current, expansion, answers, conditions)
+	lines += ["## 1. 결과 요약", ""] + [("#" + ln if ln.startswith("## ") else ln)
+		for ln in summary.splitlines()[3:]] + [""]
+
+	lines += ["## 2. 추천값 계산 과정", ""]
+	if ins and outs:
+		low_in = min(ins, key=lambda q: q["score_eff"])
+		high_out = max(outs, key=lambda q: q["score_eff"])
+		lines += [f"1. 보고서 안 질문 {len(ins)}개의 최저 score = **{low_in['score_eff']:.3f}** ({low_in['id']})",
+			f"2. 보고서 밖 질문 {len(outs)}개의 최고 score = **{high_out['score_eff']:.3f}** ({high_out['id']})"]
+		if high_out["score_eff"] < low_in["score_eff"]:
+			mid = (low_in["score_eff"] + high_out["score_eff"]) / 2
+			lines += [f"3. {high_out['score_eff']:.3f} < {low_in['score_eff']:.3f} → 두 범위가 겹치지 않음",
+				f"4. 추천 = ({low_in['score_eff']:.3f} + {high_out['score_eff']:.3f}) / 2 = {mid:.4f} → 소수 둘째 자리 반올림 **{rec}**", ""]
+		else:
+			lines += [f"3. {high_out['score_eff']:.3f} ≥ {low_in['score_eff']:.3f} → 두 범위가 겹침",
+				f"4. 후보마다 안 질문 근거 찾음 비율을 계산해 {min_recall:.0%} 이상인 후보 중 가장 높은 값을 고름", ""]
+			calc_rows = []
+			for r in table_rows:
+				ratio = r["in_pass"] / r["in_total"] if r["in_total"] else 0
+				calc_rows.append([f"{r['t']:.2f}", f"{r['in_pass']} / {r['in_total']} = {ratio:.1%}",
+					mark(ratio >= min_recall), f"{r['out_block']} / {r['out_total']}",
+					"**추천**" if rec is not None and abs(r["t"] - rec) < 1e-9 else ("현재" if abs(r["t"] - current) < 1e-9 else "")])
+			lines += table(["THRESHOLD", "안 질문 근거 찾음 (score ≥ T 개수 / 전체)", f"≥ {min_recall:.0%}",
+				"밖 질문 차단 (score < T 개수 / 전체)", "비고"], calc_rows)
+			lines += [f"5. 결과: {rec_note}", ""]
+	else:
+		lines += ["score가 없어 계산하지 않음", ""]
+
+	def side_rows(side: str) -> list[list]:
+		out = []
+		for q in [q for q in questions if q["side"] == side]:
+			s = q["score_eff"]
+			expect = "근거 있음" if side == "안" else "근거 없음"
+			actual = None if s is None else ("근거 있음" if s >= current else "근거 없음")
+			out.append([q["id"], q["group"], q["question"], expect, actual, mark(None if actual is None else actual == expect),
+				_score_calc(q, current), q["where"], q["best_query"] or "(원 질문)"])
+		return out
+
+	headers = ["번호", "유형·범주", "질문", "기대", "실제", "결과", "계산", "1등 위치", "1등을 만든 질문"]
+	in_rows, out_rows = side_rows("안"), side_rows("밖")
+	in_ok = sum(r[5] == PASS for r in in_rows)
+	out_ok = sum(r[5] == PASS for r in out_rows)
+	lines += [f"## 3. 질문별 판정 (현재 THRESHOLD {current})", "",
+		f"### 보고서 안 질문 — 기대: 근거 있음 · 맞음 {in_ok}/{len(in_rows)}", ""] + table(headers, in_rows)
+	lines += [f"### 보고서 밖 질문 — 기대: 근거 없음 · 맞음 {out_ok}/{len(out_rows)}", ""] + table(headers, out_rows)
+	lines += [f"- 안 질문 근거 찾음 비율 = {in_ok} / {len(in_rows)} = **{in_ok / len(in_rows):.1%}**" if in_rows else "",
+		f"- 밖 질문 검색 차단 비율 = {out_ok} / {len(out_rows)} = **{out_ok / len(out_rows):.1%}** "
+		"(검색에서 못 막은 밖 질문은 아래 4장에서 LLM이 '자료에 없습니다'로 막는지 본다)" if out_rows else "", ""]
+
+	if answers:
+		passed = [a for a in answers if a.get("판정(자동 후보)") == "통과"]
+		judged = [a for a in answers if a.get("판정(자동 후보)")]
+		lines += ["## 4. 할루시네이션 점검 상세 (밖 질문 실제 실행)", "",
+			f"통과율 = 통과 {len(passed)} / 판정 {len(judged)} = **{len(passed) / len(judged):.1%}**" if judged else "판정된 문항 없음", ""]
+		for a in answers:
+			verdict = a.get("판정(자동 후보)")
+			lines += [f"### {a['번호']} · {mark(None if not verdict else verdict == '통과')} {verdict or '실행 오류'}", "",
+				f"범주 **{a['범주']}** · 선택한 보고서 **{a['보고서']}**", "",
+				"**질문**", "", *quote(a["질문"]),
+				"**기대 답변**", "", *quote(f"자료에 없습니다\n(근거 없는 이유: {a['근거 없는 이유']})"),
+				f"**실제 출력** — route=`{a.get('route')}`", "", *quote(a.get("답변")),
+				"**평가 근거**", ""]
+			route, answer = a.get("route"), a.get("답변") or ""
+			if route == "error":
+				reason = "실행 오류라 판정하지 않음"
+			elif route == "no_answer":
+				reason = "route=no_answer → 검색 단계에서 THRESHOLD에 걸려 LLM을 부르지 않고 '자료에 없습니다' → **통과**"
+			elif NO_ANSWER_NORMALIZED in _normalize(answer):
+				reason = ("route=rag(검색은 통과) → 정규화한 답변에 '자료에없습니다'가 있음 → LLM 규칙이 근거 없음을 밝힘 → **통과**")
+			else:
+				reason = ("route=rag(검색은 통과) → 정규화한 답변에 '자료에없습니다'가 없음 → 보고서에 없는 내용을 답함 → "
+					"**할루시네이션 후보** (답변이 실제로 지어낸 것인지 사람이 확인)")
+			lines += [reason, ""]
+			if a.get("메모"):
+				lines += [f"메모: {a['메모']}", ""]
+			lines += ["---", ""]
+	return lines
+
+
+# ---------------------------------------------------------------------
 # 6. 실행
 # ---------------------------------------------------------------------
 def main() -> None:
@@ -284,10 +401,10 @@ def main() -> None:
 		print(f"밖 질문 답변 저장: {answer_path}")
 
 	summary = build_summary(questions, table, rec, rec_note, current, args.expansion, answers, conditions)
-	summary_path = args.out_dir / f"threshold_{stamp}_요약.md"
-	summary_path.write_text(summary, encoding="utf-8")
 	print("\n" + summary)
-	print(f"요약 저장: {summary_path}")
+	report = build_report(questions, table, rec, rec_note, current, args.expansion, answers, conditions, args.min_recall)
+	report_path = write_report(args.out_dir / f"threshold_{stamp}_리포트.md", report)
+	print(f"리포트 저장: {report_path}")
 	print("추천값은 참고용입니다. 안 질문 손실과 할루시네이션 결과를 보고 확정한 뒤 .env의 THRESHOLD와 qa_design.md 4장 표를 고치세요.")
 
 
