@@ -65,6 +65,18 @@ CHAT_TITLE_STYLE = """
 	overflow-y: auto;
 	flex-wrap: nowrap;
 }
+/* 소스 제목: 내용이 넘쳐도 줄어들지 않게 해서 제목 칸 안에 스크롤이 생기지 않고 항상 보이게 함 */
+#chat-source-title {
+	flex-shrink: 0 !important;
+	overflow: visible !important;
+}
+/* 페르소나 선택: 칸 높이가 모자라도 줄어들지 않고 안에 스크롤이 생기지 않게 해서 버튼이 잘리지 않고 항상 다 보이게 함
+   (Gradio가 Radio를 .form 상자로 한 번 더 감싸서, 그 상자도 같이 지정함) */
+#chat-source-body .form:has(#chat-persona),
+#chat-persona {
+	flex-shrink: 0 !important;
+	overflow: visible !important;
+}
 /* 과거 대화 기록 버튼: 소스 칸 맨 아래에 붙음 */
 #chat-history-btn {
 	flex: 0 0 auto !important;
@@ -103,6 +115,29 @@ CHAT_TITLE_STYLE = """
 	flex: 1 1 auto;
 	min-height: 0;
 	height: auto;
+}
+/* 질문 입력칸 아래 안내 문구: 작고 흐린 글자로 가운데 정렬, 칸 높이가 모자라도 줄어들지 않음 */
+#chat-ai-notice {
+	flex-shrink: 0;
+}
+#chat-ai-notice,
+#chat-ai-notice * {
+	text-align: center;
+	font-size: 0.8rem;
+	color: var(--body-text-color-subdued);
+}
+/* 질문 입력칸(과 보고서 탭 검색어 입력칸 report-keyword): 둥근 모서리에 연한 파란색(primary) 얇은 테두리와 바깥쪽으로 퍼지는 옅은 파란 빛, 누르면 조금 더 진하게 함 */
+#chat-message textarea,
+#report-keyword textarea {
+	border: 1px solid var(--primary-200) !important;
+	border-radius: 1rem !important;
+	box-shadow: 0 0 0.75rem 0.1rem var(--primary-100) !important;
+	background: var(--input-background-fill) !important;
+}
+#chat-message textarea:focus,
+#report-keyword textarea:focus {
+	border-color: var(--primary-300) !important;
+	box-shadow: 0 0 0.9rem 0.2rem var(--primary-200) !important;
 }
 #chat-bot .bubble-wrap {
 	overflow-y: auto;
@@ -208,10 +243,10 @@ def build_chat_tab():
 	"""질의응답 탭 화면을 만든다. (gr.Blocks의 gr.Tabs 안에서 호출)
 
 	화면을 소스(3)·채팅(6) 두 칸으로 나누고, 스튜디오는 오른쪽에서 펼쳐지는 사이드바로 둔다. (UI 레퍼런스: 소스·채팅·스튜디오 3단 배치)
-	- 왼쪽(소스): 보고서 목록(선택 박스, 최대 5개)·페르소나(입문자/실무자/전문가)·검색 옵션(k, MMR),
+	- 왼쪽(소스): 보고서 목록(선택 박스, 최대 5개)·페르소나(입문자/실무자/전문가),
 	  답변이 끝나면 그 아래에 출처가 나온다. 칸 맨 아래에는 '과거 대화 기록' 버튼이 붙어 있고, 누르면
 	  채팅 칸 자리에 과거 대화 기록(build_history_panel, 임세준)이 보인다 (연결은 build_app).
-	- 가운데(채팅): 추천 질문 버튼 3개(한 줄) → 대화창(gr.Chatbot) → 👍/👎 → 질문 입력칸·전송 버튼.
+	- 가운데(채팅): 대화창(gr.Chatbot) → 👍/👎 → 추천 질문 버튼 3개(한 줄) → 질문 입력칸·전송 버튼.
 	  질문 입력칸은 추천 질문 버튼보다 먼저 만들어야 해서 render=False로 만들고, 화면 맨 아래에서 render()로 놓는다.
 	- 오른쪽(스튜디오): gr.Sidebar(position="right")로 만들어 처음에는 접어 두고, 화면 오른쪽 끝의
 	  버튼(Gradio 기본 제공)을 누르면 펼치거나 접는다. 안의 '용어 카드' 메뉴(gr.Accordion) 검색 창은
@@ -226,7 +261,7 @@ def build_chat_tab():
 	"""
 	with gr.Tab("질의응답", id=CHAT_TAB_ID) as tab:
 		with gr.Row(equal_height=False):
-			# 왼쪽: 소스 (보고서 선택·페르소나·검색 옵션, 답변 뒤에는 출처)
+			# 왼쪽: 소스 (보고서 선택·페르소나, 답변 뒤에는 출처)
 			# 소스 내용은 위쪽에서 남는 높이를 쓰며 넘치면 그 안에서 스크롤, '과거 대화 기록' 버튼은 칸 맨 아래에 붙는다
 			with gr.Column(scale=3, variant="panel", elem_id="chat-source-col"):
 				with gr.Column(elem_id="chat-source-body"):
@@ -237,15 +272,15 @@ def build_chat_tab():
 						label=f"보고서 선택 (최대 {MAX_SELECTED_REPORTS}개)", choices=[], elem_id="chat-report-list"
 					)
 					verify_btn = gr.Button("🔍 수치 검증 (ECOS)", size="sm")
-					persona = gr.Radio(PERSONA_CHOICES, value=DEFAULT_PERSONA, label="페르소나")
-					with gr.Accordion("검색 옵션", open=False):
-						k = gr.Slider(1, 10, value=DEFAULT_K, step=1, label="가져올 근거 수 (k)")
-						use_mmr = gr.Checkbox(label="MMR 사용 (서로 다른 근거 고르기)", value=False)
+					persona = gr.Radio(PERSONA_CHOICES, value=DEFAULT_PERSONA, label="질문 수준", elem_id="chat-persona")
+					# 검색 옵션은 화면에 두지 않고 기본값(k=DEFAULT_K, MMR 끔)을 그대로 쓴다
+					k = gr.State(DEFAULT_K)
+					use_mmr = gr.State(False)
 					# 출처: 답변이 끝나면 respond_stream()이 채운다 (없으면 빈칸)
 					sources = gr.Markdown()
 				# 누르면 채팅 칸 자리에 과거 대화 기록(build_history_panel, 임세준)이 보인다 (연결은 build_app)
 				history_btn = gr.Button("과거 대화 기록", elem_id="chat-history-btn")
-			# 가운데: 채팅 (추천 질문 → 대화창 → 질문 입력칸)
+			# 가운데: 채팅 (대화창 → 추천 질문 → 질문 입력칸)
 			with gr.Column(scale=6, variant="panel", elem_id="chat-chat-col") as chat_col:
 				gr.Markdown("#### 채팅", elem_id="chat-chat-title")
 				# 추천 질문: 처음에는 시작 질문(STARTER_QUESTIONS, 류현수)을 보여 주고, 답변이 끝나면 후속 질문으로 바꾼다
@@ -256,18 +291,22 @@ def build_chat_tab():
 					scale=1,
 					container=False,
 					render=False,
+					elem_id="chat-message",
 				)
-				with gr.Row():
-					suggest_buttons = build_suggest_buttons(message)
 				# 높이는 CHAT_TITLE_STYLE에서 창 크기에 맞춘다 (대화창 안에서만 스크롤)
 				chatbot = gr.Chatbot(show_label=False, elem_id="chat-bot")
 				# 피드백: 처음에는 숨기고, 기록(log_id)이 남은 답변이 끝나면 보인다 (connect_feedback_events, 류현수)
 				with gr.Row():
 					like_btn = gr.Button("👍", visible=False, scale=0, min_width=60, size="sm")
 					dislike_btn = gr.Button("👎", visible=False, scale=0, min_width=60, size="sm")
+				# 추천 질문 버튼: 질문 입력칸 바로 위에 한 줄로
+				with gr.Row():
+					suggest_buttons = build_suggest_buttons(message)
 				with gr.Row(equal_height=True):
 					message.render()
 					send_btn = gr.Button("전송", variant="primary", scale=0, min_width=90)
+				# 질문 입력칸 아래 안내 문구
+				gr.Markdown("AI 답변은 선택한 보고서 내용을 바탕으로 합니다. 중요한 수치는 출처 쪽수와 원문을 확인해 주세요.", elem_id="chat-ai-notice")
 			# 가운데(채팅 칸 자리): 과거 대화 기록. 처음에는 숨김
 			build_history_panel()
 		# 오른쪽: 스튜디오 (용어 카드). gr.Sidebar라서 화면 오른쪽 끝의 버튼으로 펼치고 접는다 (처음에는 접힘)
