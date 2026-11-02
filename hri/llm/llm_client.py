@@ -25,14 +25,25 @@ def get_chat_model(
     max_tokens: int = 4000,
 	reasoning_effort: str | None = "none",
 ) -> ChatOpenAI:
-    """ChatOpenAI 모델을 만들어 반환한다."""
-    return ChatOpenAI(
-        model=model or MODEL,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        reasoning_effort=reasoning_effort,
-        stream_usage=True,
-    )
+	"""ChatOpenAI 모델을 만들어 반환한다."""
+	model = model or MODEL  # 인자를 안 주면(대부분의 호출) .env의 LLM_MODEL을 쓴다
+
+	if model=="gpt-6-luna":
+		return ChatOpenAI(
+			model=model or MODEL,
+			temperature=temperature,
+			max_tokens=max_tokens,
+			reasoning_effort=reasoning_effort,
+			stream_usage=True,
+		)
+	elif model=="gpt-4.1":
+		return ChatOpenAI(
+			model=model or MODEL,
+			temperature=temperature,
+			max_tokens=max_tokens,
+			stream_usage=True,
+		)
+	raise ValueError(f"get_chat_model이 모르는 모델입니다: {model} (gpt-6-luna, gpt-4.1만 설정돼 있음)")
 
 
 def ask_llm(
