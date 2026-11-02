@@ -67,6 +67,7 @@ def load_settings() -> Settings:
 		chunk_size=os.getenv("CHUNK_SIZE", "500"),
 		chunk_overlap=os.getenv("CHUNK_OVERLAP", "50"),
 		threshold=os.getenv("THRESHOLD", "0.3"),
+		mmr_lambda=os.getenv("MMR_LAMBDA") or "0.5",
 		max_context_chars=max_context_chars
 	)
 

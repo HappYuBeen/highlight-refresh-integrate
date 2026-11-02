@@ -1,7 +1,7 @@
 """설정 스키마 · Settings: .env에서 읽은 앱 설정 (임세준)"""
 from typing import Literal, Optional
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, Field, SecretStr
 
 __all__ = ["Settings"]
 
@@ -20,7 +20,7 @@ class Settings(BaseModel):
 	OCR·차트: ocr_langs, ocr_min_conf, chart_dpi, min_chart_pt
 	그래프: graph_recursion_limit
 	업로드 한도: max_mb, max_pages
-	검색: chunk_size, chunk_overlap, threshold, max_context_chars
+	검색: chunk_size, chunk_overlap, threshold, mmr_lambda, max_context_chars
 	"""
 	# API 키 (없으면 빈 문자열)
 	openai_api_key: str = ""
@@ -66,4 +66,5 @@ class Settings(BaseModel):
 	chunk_size: int = 500
 	chunk_overlap: int = 50
 	threshold: float = 0.3
+	mmr_lambda: float = Field(default=0.5, ge=0.0, le=1.0)  # MMR 관련도 비중 (1 = 관련도만 = MMR 끈 것과 같음, 0에 가까울수록 다양성)
 	max_context_chars: Optional[int] = None
