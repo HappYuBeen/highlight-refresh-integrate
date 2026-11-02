@@ -113,8 +113,7 @@
 
 ## 시연
 
-> 전체 시연 영상(5분 44초): [hri_video_demo_v5.mp4](https://drive.google.com/file/d/1A9ToBdDFVfQynrooGCXO7a_pqgLcwMgv/view?usp=drivesdk)
-> <!-- TODO: 팀 내부 Drive 링크입니다. 포트폴리오로 공개할 때는 YouTube 등 공개 링크로 교체하세요. -->
+<iframe width="1030" height="579" src="https://www.youtube.com/embed/TRh1QrnkGGk" title="Hyundai AI 서비스 개발자 과정 1차 프로젝트 4조_Insight Bridge(Highlight Refresh Integrate)" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 아래 GIF는 시연 영상을 기능별로 나눈 것입니다. 각 항목을 눌러 펼쳐 보세요.
 
