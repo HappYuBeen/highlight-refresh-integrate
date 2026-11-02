@@ -572,7 +572,7 @@ highlight-refresh-integrate/
 |:-:|:-:|:-:|:-:|:-:|:-:|
 | **류현수** | **김희진** | **서동안** | **엄정현** | **임세준** | **장유빈** |
 | 팀장 | 팀원 | 팀원 | 팀원 | 팀원 | 팀원 |
-| 환경 · 협업 · 통합 | 요약 · 업로드 · 에이전트 | 질의응답 · 프롬프트 | 문서 처리 · ECOS | 화면 · 관리자 | RAG 검색 · 지표 비교 |
+| 환경 · 협업 · 통합 · ECOS | 요약 · 업로드 · 에이전트 | 질의응답 · 프롬프트 | 문서 처리 · Langgraph | 화면 · 관리자 | RAG 검색 · 지표 비교 |
 | [@HyeonsuRyu](https://github.com/HyeonsuRyu) | [@gmlwls02190](https://github.com/gmlwls02190) | [@dongan0718](https://github.com/dongan0718) | [@string2015](https://github.com/string2015) | [@SOLUNA2](https://github.com/SOLUNA2) | [@HappYuBeen](https://github.com/HappYuBeen) |
 
 </div>
