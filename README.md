@@ -22,7 +22,7 @@
 현대 AI 서비스 개발자 과정 · 1차 프로젝트 **4조 Insight Bridge**<br/>
 2026.10.21 ~ 2026.11.02
 
-[시연](#-시연) · [주요 기능](#-주요-기능) · [아키텍처](#-시스템-아키텍처) · [시작하기](#-시작하기) · [팀 소개](#-팀-소개)
+[시연](#시연) · [주요 기능](#주요-기능) · [아키텍처](#시스템-아키텍처) · [시작하기](#시작하기) · [팀 소개](#팀-소개)
 
 </div>
 
@@ -32,20 +32,20 @@
 
 ## 목차
 
-1. [한눈에 보기](#-한눈에-보기)
-2. [프로젝트 개요](#-프로젝트-개요)
-3. [시연](#-시연)
-4. [주요 기능](#-주요-기능)
-5. [시스템 아키텍처](#-시스템-아키텍처)
-6. [기술 스택](#-기술-스택)
-7. [DB 구조](#-db-구조)
-8. [문제 해결 사례](#-문제-해결-사례)
-9. [검증 결과](#-검증-결과)
-10. [시작하기](#-시작하기)
-11. [폴더 구조](#-폴더-구조)
-12. [팀 소개](#-팀-소개)
-13. [프로젝트 진행](#-프로젝트-진행)
-14. [자체 평가와 회고](#-자체-평가와-회고)
+1. [한눈에 보기](#한눈에-보기)
+2. [프로젝트 개요](#프로젝트-개요)
+3. [시연](#시연)
+4. [주요 기능](#주요-기능)
+5. [시스템 아키텍처](#시스템-아키텍처)
+6. [기술 스택](#기술-스택)
+7. [DB 구조](#db-구조)
+8. [문제 해결 사례](#문제-해결-사례)
+9. [검증 결과](#검증-결과)
+10. [시작하기](#시작하기)
+11. [폴더 구조](#폴더-구조)
+12. [팀 소개](#팀-소개)
+13. [프로젝트 진행](#프로젝트-진행)
+14. [자체 평가와 회고](#자체-평가와-회고)
 
 ---
 
@@ -354,7 +354,7 @@ flowchart LR
 
 ---
 
-## 🛠 기술 스택
+## 기술 스택
 
 | 분류 | 기술 |
 |---|---|
@@ -369,7 +369,7 @@ flowchart LR
 
 ---
 
-## 🗄 DB 구조
+## DB 구조
 
 ```mermaid
 erDiagram
@@ -442,8 +442,6 @@ erDiagram
 
 - **실데이터 점검**: 현대경제연구원 보고서 37편에서 표 294개, 차트 875개(캡션 868개)를 검출했습니다.
 - **변조 테스트**: 코드를 일부러 망가뜨려 테스트가 잡아내는지 확인했습니다. 차트 21·13·27가지, 표 15가지, 그래프 8가지 변조를 모두 감지했습니다.
-- **그래프 분기 시나리오** 9건을 모두 통과했습니다.
-- `tests/`에 단위·통합 테스트 47개 파일과 정확도·검색 파라미터 평가 스크립트(`eval_*.py`)가 있습니다.
 
 **측정 결과** <!-- TODO: 테스트 결과서(WBS 4.1) 값으로 채워 주세요 -->
 
@@ -534,12 +532,6 @@ python app.py
   UPDATE users SET role = 'admin' WHERE user_id = '<아이디>';
   ```
 
-### 6. 테스트
-
-```bash
-pytest tests
-```
-
 ---
 
 ## 폴더 구조
@@ -565,7 +557,6 @@ highlight-refresh-integrate/
 │  ├─ config/ exception/ util/ source/ suggest/
 ├─ sql/schema.sql         MySQL 스키마
 ├─ docs/                  설계 문서, 시연 GIF (docs/demo)
-├─ tests/                 테스트·평가 스크립트
 └─ assets/                폰트·로고
 ```
 
@@ -577,7 +568,7 @@ highlight-refresh-integrate/
 
 <div align="center">
 
-| <img src="https://github.com/HyeonsuRyu.png" width="100" /> | <img src="https://github.com/gmlwls02190.png" width="100" /> | <img src="https://github.com/dongan0718.png" width="100" /> | <img src="https://github.com/string2015.png" width="100" /> | <img src="https://github.com/SOLUNA2.png" width="100" /> | <img src="https://github.com/HappYuBeen.png" width="100" /> |
+| <img src="https://github.com/HyeonsuRyu.png" width="100" /> | <img src="https://github.com/gmlwls02190.png" width="100" /> | <img src="https://github.com/dongan0718.png" width="100" /> | <img src="https://github.com/string2015-dev.png" width="100" /> | <img src="https://github.com/SOLUNA2.png" width="100" /> | <img src="https://github.com/HappYuBeen.png" width="100" /> |
 |:-:|:-:|:-:|:-:|:-:|:-:|
 | **류현수** | **김희진** | **서동안** | **엄정현** | **임세준** | **장유빈** |
 | 팀장 | 팀원 | 팀원 | 팀원 | 팀원 | 팀원 |
@@ -597,20 +588,20 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@HyeonsuRyu](https://github.com/HyeonsuRyu) |
-| 연락처 | `[이메일 또는 블로그]` |
-| 담당 업무 | API 키 발급, Git·가상환경·DB 환경 세팅, 폴더 구조, 환율 API·용어 풀이, 추천 질문, 테스트 시나리오·실행 재현 테스트 |
+| 연락처 | hsoo112149@gmail.com |
+| 담당 업무 | Git·가상환경·DB 환경 세팅, 폴더 구조, 환율 API·용어 풀이, 추천 질문, 테스트 시나리오·실행 재현 테스트 |
 
 **주요 기여**
 
 - 협업 규칙(`CONTRIBUTING.md`, 이슈·PR 템플릿, CODEOWNERS) 수립과 PR 리뷰·승인
 - Poetry 기반 개발 환경 구성, `requirements.txt` 내보내기, 설치 가이드 정리
-- LangGraph 노드 연결, 챗봇 성능 개선과 평가 보고서 자동 생성
+- LangGraph 노드 연결, 챗봇 성능 개선
 - 색 테마 통일, 탭 이동 문제 해결, 대화 이어가기를 질의응답 탭에 통합하는 등 UI 개선
 
 **회고**
 
 > `[프로젝트에서 맡은 역할과 가장 기억에 남는 순간]`
->
+> 
 > `[잘한 점 · Keep]`
 >
 > `[어려웠던 점과 해결 과정 · Problem]`
@@ -626,7 +617,7 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@gmlwls02190](https://github.com/gmlwls02190) |
-| 연락처 | `[이메일 또는 블로그]` |
+| 연락처 | ksh02190@gmail.com |
 | 담당 업무 | 키워드 검색, 요약 전체(3줄·섹션), 임베딩·Chroma·보고서 DAO, 업로드 통합·화면, Tool Calling 도구·에이전트 루프 |
 
 **주요 기여**
@@ -656,7 +647,7 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@dongan0718](https://github.com/dongan0718) |
-| 연락처 | `[이메일 또는 블로그]` |
+| 연락처 | dongan0912@gmail.com |
 | 담당 업무 | 질의응답·프롬프트 설계, 입력 검증·개인정보 마스킹, 공통 LLM 모듈, 답변 수준 프롬프트, 테스트 전반, 시연 영상 |
 
 **주요 기여**
@@ -686,7 +677,7 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@string2015](https://github.com/string2015) |
-| 연락처 | `[이메일 또는 블로그]` |
+| 연락처 | string.ai.class@gmail.com |
 | 담당 업무 | 보고서 수집, PDF 검증·추출, 표 추출·변환·요약, ECOS API 전반, 외부 데이터 설계, 발표 리허설·발표 |
 
 **주요 기여**
@@ -715,7 +706,7 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@SOLUNA2](https://github.com/SOLUNA2) |
-| 연락처 | `[이메일 또는 블로그]` |
+| 연락처 | sejunqw@gmail.com |
 | 담당 업무 | 화면 설계, 메인 앱 구조, 로그인·회원, 대화·질문 기록, 관리자 대시보드, 예외 처리, UI 통합·다듬기 |
 
 **주요 기여**
@@ -744,7 +735,7 @@ highlight-refresh-integrate/
 | 항목 | 내용 |
 |---|---|
 | GitHub | [@HappYuBeen](https://github.com/HappYuBeen) |
-| 연락처 | `[이메일 또는 블로그]` |
+| 연락처 | yubeeni83i@gmail.com |
 | 담당 업무 | DB 설계·DDL, RAG 검색(의미·하이브리드·질문 확장), 근거 없음 처리, 질의응답 서비스·채팅 화면, 지표 추출·비교표, 결과보고서 PPT 제작 |
 
 **주요 기여**
@@ -819,8 +810,8 @@ gitGraph
 
 | 관점 | 점수 | 근거 |
 |---|:-:|---|
-| 기획 의도와의 부합 · 실무 활용 가능성 | `[ ] / 10` | `[팀 합의 후 기재]` |
-| 달성도 · 완성도 | `[ ] / 10` | `[팀 합의 후 기재]` |
+| 기획 의도와의 부합 · 실무 활용 가능성 | `7 / 10` | `[팀 합의 후 기재]` |
+| 달성도 · 완성도 | `8 / 10` | `[팀 합의 후 기재]` |
 
 ### 잘한 점
 
@@ -840,14 +831,6 @@ gitGraph
 - LangGraph로 분기·병렬·반복 흐름을 설계한 경험
 - 기능 명세서·WBS·코드를 함께 맞춰 가는 협업
 - 수치로 검증해야 규칙이 의미 있다는 것
-
-### 팀 회고 (KPT)
-
-<!-- TODO: 팀 KPT 회고(WBS 6.1.3) 내용으로 채워 주세요 -->
-
-| Keep | Problem | Try |
-|---|---|---|
-| `[ ]` | `[ ]` | `[ ]` |
 
 ---
 
