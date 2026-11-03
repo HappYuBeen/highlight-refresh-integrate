@@ -909,6 +909,24 @@ gitGraph
 - 기능 명세서·WBS·코드를 함께 맞춰 가는 협업
 - 수치로 검증해야 규칙이 의미 있다는 것
 
+**담당 파일**
+
+| 영역 | 파일 | 담당한 부분 |
+|---|---|---|
+| DB | `sql/schema.sql`, `sql/reset.sql` | 테이블 11개·VIEW 설계, 전체 삭제용 스크립트 |
+| DB | `hri/dao/indicator_dao.py` | 지표 조회·저장 (`select_indicators`, `insert_indicators`) |
+| DB | `hri/dao/report_dao.py` | 보고서 목록 조회 (`select_reports`), 표·차트 원본 조회 (`select_report_tables`) |
+| RAG | `hri/retriever/search.py` | 의미 검색·질문 확장·MMR·하이브리드 검색 (`vector_search`, `safe_search`, `expand_queries`, `mmr_select`, `hybrid_search`) |
+| RAG | `hri/memory/history_store.py` | 대화 기록 줄이기·질문 다시 쓰기 (`trim_history`, `rewrite_question`) |
+| RAG | `hri/prompt/rag_prompt.py` | 근거 기반 프롬프트 (`format_docs`, `has_context`, `build_messages`) |
+| RAG | `hri/source/source_formatter.py` | 출처 목록 정리 (`format_sources`) |
+| 질의응답 | `hri/service/qa_service.py` | 답변 스트리밍 (`ask_stream`) |
+| 질의응답 | `hri/view/chat_view.py` | 질의응답 탭 화면 (`build_chat_tab`, `respond_stream`) |
+| 보고서 | `hri/service/report_service.py` | 보고서 목록·본문 (`search_reports`, `owner_filter`, `get_report_text`) |
+| 보고서 | `hri/view/report_view.py` | 보고서 목록·검색 화면 (`build_report_list_panel`) |
+| 지표 비교 | `hri/service/indicator_service.py` | 지표 추출·이름 통일·비교표·차트·ECOS 참고 (`extract_indicators`, `build_compare_table`, `plot_indicators`, `build_ecos_reference`) |
+| 지표 비교 | `hri/view/indicator_view.py` | 비교 실행·보고서 선택 창 (`on_compare`, `on_pick_change`) |
+| 팀 점검 | `hri/loader/table_loader.py` | 표 추출·검수 (`extract_tables`, `validate_table`) |
 ---
 
 <div align="center">
